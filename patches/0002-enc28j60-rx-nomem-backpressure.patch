@@ -1,0 +1,45 @@
+From: Modulo-Wifi maintainer
+Subject: [PATCH] fix(enc28j60): avoid busy-spin and WDT starvation under RX pressure
+
+When the DMA-capable heap is exhausted, heap_caps_malloc() for the RX buffer
+returns NULL. The current code logs the error but stays in the do/while
+(emac->packets_remain) loop, immediately retrying the allocation. Under
+sustained pressure this becomes a tight busy-loop that can starve the task
+watchdog and never yields to let lwIP free buffers.
+
+On allocation failure, delay briefly and break out of the drain loop; the
+interrupt re-triggers once buffers are available again. Also yield at the end
+of each iteration during sustained packet floods, and NULL the buffer pointer
+after ownership is transferred to the stack or after freeing, to make the
+double-free protection explicit.
+
+--- a/enc28j60/src/esp_eth_mac_enc28j60.c
++++ b/enc28j60/src/esp_eth_mac_enc28j60.c
+@@ -- emac_enc28j60_task, "packet received" block
+         // packet received
+         if (status & EIR_PKTIF) {
+             do {
+                 length = ETH_MAX_PACKET_SIZE;
+                 buffer = heap_caps_malloc(length, MALLOC_CAP_DMA);
+                 if (!buffer) {
+                     ESP_LOGE(TAG, "no mem for receive buffer");
++                    // Break out — don't spin. The interrupt will re-trigger
++                    // once lwIP frees buffers and we can allocate again.
++                    vTaskDelay(pdMS_TO_TICKS(5));
++                    break;
+                 } else if (emac->parent.receive(&emac->parent, buffer, &length) == ESP_OK) {
+                     /* pass the buffer to stack (e.g. TCP/IP layer) */
+                     if (length) {
+                         emac->eth->stack_input(emac->eth, buffer, length);
++                        buffer = NULL; // ownership transferred to stack
+                     } else {
+                         free(buffer);
++                        buffer = NULL;
+                     }
+                 } else {
+                     free(buffer);
++                    buffer = NULL;
+                 }
++                taskYIELD(); // prevent WDT starvation during sustained packet floods
+             } while (emac->packets_remain);
+         }

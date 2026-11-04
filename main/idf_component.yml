@@ -1,0 +1,25 @@
+## IDF Component Manager Manifest File
+dependencies:
+  ## Required IDF version
+  idf:
+    version: '>=4.1.0'
+  # Pre-encrypted OTA: decrypts RSA-3072 wrapped firmware on-device so the .bin
+  # served from the public S3 bucket is encrypted at rest. 2.7.1 is what the
+  # Component Manager resolves for IDF 5.4.4; caret keeps us on 2.7.x (< 3.0).
+  # NOTE: this transitively pulls espressif/esp_secure_cert_mgr, which is only
+  # used by the DS-peripheral RSA path (not enabled here) — leave it alone.
+  espressif/esp_encrypted_img: "^2.7.1"
+  # # Put list of dependencies here
+  # # For components maintained by Espressif:
+  # component: "~1.0.0"
+  # # For 3rd party components:
+  # username/component: ">=1.0.0,<2.0.0"
+  # username2/component2:
+  #   version: "~1.0.0"
+  #   # For transient dependencies `public` flag can be set.
+  #   # `public` flag doesn't have an effect dependencies of the `main` component.
+  #   # All dependencies of `main` are public by default.
+  #   public: true
+  # NOTE: enc28j60 is vendored locally at components/enc28j60 (patched — see
+  # patches/ and .kiro/steering). Do NOT re-add it as a managed dependency here,
+  # or the Component Manager will download an unpatched copy into managed_components/.

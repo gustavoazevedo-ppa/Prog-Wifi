@@ -1,0 +1,14 @@
+build/
+.github/copilot-instructions.md
+
+# Python virtual environments
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# PyInstaller output
+dist/
+*.spec

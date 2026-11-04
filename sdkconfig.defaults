@@ -1,0 +1,47 @@
+# This file was generated using idf.py save-defconfig. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) Project Minimal Configuration
+#
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n
+CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
+# Note: this project uses the Bluedroid host (CONFIG_BT_BLUEDROID_ENABLED=y).
+# The BLE 5.0 toggle above (CONFIG_BT_BLE_50_FEATURES_SUPPORTED) is the correct
+# one. The NimBLE-only CONFIG_BT_LE_50_FEATURE_SUPPORT symbol was removed — it
+# is not defined for Bluedroid and produced an "unknown kconfig symbol" warning.
+
+# Enable TLS 1.3 for modern server compatibility (Cloudflare, AWS, etc.)
+CONFIG_MBEDTLS_SSL_PROTO_TLS1_3=y
+
+# Enable OTA rollback — reverts to previous firmware if new one fails to boot
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Pre-encrypted OTA: expose the decrypt callback fields (decrypt_cb /
+# decrypt_user_ctx / enc_img_header_size) on esp_https_ota_config_t, and select
+# the RSA-3072 scheme of esp_encrypted_img. RSA is already the choice default;
+# set explicitly so a future menuconfig edit can't silently drop it.
+CONFIG_ESP_HTTPS_OTA_DECRYPT_CB=y
+CONFIG_PRE_ENCRYPTED_OTA_USE_RSA=y
+
+# Use common cert bundle (smaller, covers Cloudflare/AWS/Google)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+
+# Reduce log level to WARN (saves flash from string literals)
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL=2
+
+# Task watchdog: 30s timeout, panic (reset) on trigger
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# --- Heap savings ---
+# Let mbedTLS grow/shrink TLS record buffers on demand instead of pinning the
+# full 16KB RX + 4KB TX for the whole connection. Steady-state traffic here is
+# tiny (telemetry JSON <=320B), so resting footprint drops ~12KB per session.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# Single-client provisioning: only one BLE connection is ever active at a time.
+# Shrinks the controller reserved DRAM and the host ACL pool.
+CONFIG_BTDM_CTRL_BLE_MAX_CONN=1
+CONFIG_BT_ACL_CONNECTIONS=1

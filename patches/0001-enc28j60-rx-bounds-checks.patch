@@ -1,0 +1,66 @@
+From: Modulo-Wifi maintainer
+Subject: [PATCH] fix(enc28j60): validate RX status vector before reading packet
+
+The receive path trusts the length and next-packet address reported by the
+chip's Receive Status Vector (RSV) without validation. A corrupt RSV, which
+can result from an SPI glitch or a chip buffer-pointer desync, can report an
+rx_len larger than the caller-provided buffer, causing enc28j60_read_packet()
+to write past the end of the allocated RX buffer (heap overflow). An
+out-of-range next_packet_addr can also desync the RX ring.
+
+Add two guards at the top of emac_enc28j60_receive(): reject an rx_len that
+exceeds *length, and reject a next_packet_addr beyond ENC28J60_BUF_RX_END.
+In both cases discard the packet but still advance the packet counter via a
+new pktdec: label so the RX pipeline keeps moving.
+
+--- a/enc28j60/src/esp_eth_mac_enc28j60.c
++++ b/enc28j60/src/esp_eth_mac_enc28j60.c
+@@ -- emac_enc28j60_receive
+     // get packets' length, address
+     rx_len = header.length_low + (header.length_high << 8);
+     next_packet_addr = header.next_packet_low + (header.next_packet_high << 8);
+ 
++    // Bounds check: rx_len must not exceed the caller's buffer (*length).
++    // A corrupt receive status vector (from buffer overflow, SPI glitch, etc.)
++    // can report an oversized rx_len which would overwrite past the allocated buffer.
++    if (rx_len > *length) {
++        ESP_LOGE(TAG, "rx_len %u exceeds buffer %lu, discarding", rx_len, (unsigned long)*length);
++        // Advance pointers to skip this corrupt packet
++        emac->next_packet_ptr = next_packet_addr;
++        *length = 0; // signal caller to discard
++        goto pktdec;
++    }
++
++    // Validate next_packet_addr is within RX buffer bounds
++    if (next_packet_addr > ENC28J60_BUF_RX_END) {
++        ESP_LOGE(TAG, "corrupt next_packet_addr 0x%04lx (max 0x%04x), discarding",
++                 (unsigned long)next_packet_addr, ENC28J60_BUF_RX_END);
++        *length = 0;
++        goto pktdec;
++    }
++
+     // read packet content
+     MAC_CHECK(enc28j60_read_packet(emac, enc28j60_rx_packet_start(emac->next_packet_ptr, ENC28J60_RSV_SIZE), buf, rx_len) == ESP_OK,
+               "read packet content failed", out, ESP_FAIL);
+ 
+     // free receive buffer space
+     uint32_t erxrdpt = enc28j60_next_ptr_align_odd(next_packet_addr, ENC28J60_BUF_RX_START, ENC28J60_BUF_RX_END);
+     MAC_CHECK(enc28j60_register_write(emac, ENC28J60_ERXRDPTL, (erxrdpt & 0xFF)) == ESP_OK,
+               "write ERXRDPTL failed", out, ESP_FAIL);
+     MAC_CHECK(enc28j60_register_write(emac, ENC28J60_ERXRDPTH, (erxrdpt & 0xFF00) >> 8) == ESP_OK,
+               "write ERXRDPTH failed", out, ESP_FAIL);
+     emac->next_packet_ptr = next_packet_addr;
+ 
++    *length = rx_len - 4; // subtract the CRC length
++
++pktdec:
+     MAC_CHECK(enc28j60_do_bitwise_set(emac, ENC28J60_ECON2, ECON2_PKTDEC) == ESP_OK,
+               "set ECON2.PKTDEC failed", out, ESP_FAIL);
+     MAC_CHECK(enc28j60_register_read(emac, ENC28J60_EPKTCNT, &pk_counter) == ESP_OK,
+               "read EPKTCNT failed", out, ESP_FAIL);
+ 
+-    *length = rx_len - 4; // subtract the CRC length
+     emac->packets_remain = pk_counter > 0;
+ out:
+     return ret;
+ }

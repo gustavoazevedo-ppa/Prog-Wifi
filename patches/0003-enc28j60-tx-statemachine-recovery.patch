@@ -1,0 +1,48 @@
+From: Modulo-Wifi maintainer
+Subject: [PATCH] fix(enc28j60): recover from stuck TX state machine (errata #12/#13)
+
+The TX-done handshake relies on the EIR_TXIF interrupt giving tx_ready_sem.
+If the ENC28J60 TX state machine latches up (errata #12/#13), TXRTS stays set
+and the TX-done interrupt never fires, so tx_ready_sem is never given. The
+existing TXERIF recovery in the RX/IRQ task only runs on an interrupt that is
+never delivered in this state. The result is that emac_enc28j60_transmit()
+times out on tx_ready_sem, then fails the `!(econ1 & ECON1_TXRTS)` check and
+returns ESP_ERR_INVALID_STATE for every subsequent packet — TX wedges
+permanently ("last transmit still in progress" forever), taking down all
+outbound traffic while the link still appears up.
+
+Replace the hard abort with an in-line recovery: if TXRTS is still set after
+the wait, reset the TX logic (pulse ECON1.TXRST), clear the stale TX interrupt
+flags, and continue to transmit the current packet, which re-arms the TX
+interrupt and re-asserts TXRTS. This converts a permanent hang into a
+self-healing event.
+
+--- a/enc28j60/src/esp_eth_mac_enc28j60.c
++++ b/enc28j60/src/esp_eth_mac_enc28j60.c
+@@ -- emac_enc28j60_transmit
+     /* ENC28J60 may be a bottle neck in Eth communication. Hence we need to check if it is ready. */
+     if (xSemaphoreTake(emac->tx_ready_sem, pdMS_TO_TICKS(ENC28J60_TX_READY_TIMEOUT_MS)) == pdFALSE) {
+         ESP_LOGW(TAG, "tx_ready_sem expired");
+     }
+     MAC_CHECK(enc28j60_do_register_read(emac, true, ENC28J60_ECON1, &econ1) == ESP_OK,
+               "read ECON1 failed", out, ESP_FAIL);
+-    MAC_CHECK(!(econ1 & ECON1_TXRTS), "last transmit still in progress", out, ESP_ERR_INVALID_STATE);
++    if (econ1 & ECON1_TXRTS) {
++        /* TX state machine is stuck (ENC28J60 errata #12/#13): TXRTS was never
++           cleared and the TX-done interrupt (EIR_TXIF) never fired, so tx_ready_sem
++           was never given. The task's EIR_TXERIF recovery only runs on an interrupt
++           that isn't coming, so without recovery here TX wedges permanently
++           ("last transmit still in progress" forever). Reset the TX state machine,
++           clear the stale TX interrupt flags, and continue with the current packet. */
++        ESP_LOGW(TAG, "TX stuck (TXRTS set); resetting TX state machine");
++        MAC_CHECK(enc28j60_do_bitwise_set(emac, ENC28J60_ECON1, ECON1_TXRST) == ESP_OK,
++                  "set TXRST failed", out, ESP_FAIL);
++        MAC_CHECK(enc28j60_do_bitwise_clr(emac, ENC28J60_ECON1, ECON1_TXRST) == ESP_OK,
++                  "clear TXRST failed", out, ESP_FAIL);
++        MAC_CHECK(enc28j60_do_bitwise_clr(emac, ENC28J60_EIR, EIR_TXERIF | EIR_TXIF) == ESP_OK,
++                  "clear TX interrupt flags failed", out, ESP_FAIL);
++    }
+ 
+     /* Set the write pointer to start of transmit buffer area */
+     MAC_CHECK(enc28j60_register_write(emac, ENC28J60_EWRPTL, ENC28J60_BUF_TX_START & 0xFF) == ESP_OK,
+               "write EWRPTL failed", out, ESP_FAIL);

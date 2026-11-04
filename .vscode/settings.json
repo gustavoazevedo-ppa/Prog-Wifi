@@ -1,0 +1,18 @@
+{
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "idf.espIdfPathWin": "C:\\Users\\gusta\\esp\\v5.4.1\\esp-idf",
+    "idf.toolsPathWin": "C:\\Espressif",
+    "idf.pythonInstallPath": "C:\\Espressif\\tools\\idf-python\\3.11.2\\python.exe",
+    "idf.flashType": "UART",
+    "idf.buildPath": "${workspaceFolder}/build",
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32"
+    },
+    "files.associations": {
+        "esp_eth_phy.h": "c",
+        "esp_eth_mac_esp.h": "c"
+    },
+    "idf.currentSetup": "C:\\esp\\v5.4.4\\esp-idf",
+    "idf.port": "COM3"
+}

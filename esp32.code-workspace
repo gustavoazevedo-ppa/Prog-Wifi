@@ -1,0 +1,36 @@
+{
+  "folders": [
+    {
+      "path": "./"
+    }
+  ],
+  "settings": {
+    "idf.espIdfPath": "${env:HOME}/esp/esp-idf",
+    "idf.pythonBinPath": "${env:HOME}/.espressif/python_env/idf5.1_py3.11_env/bin/python",
+    "idf.toolsPath": "${env:HOME}/.espressif",
+    "idf.port": "/dev/ttyUSB0",
+    "idf.openOcdConfigs": [
+      "board/esp32-wrover-kit-3.3v.cfg"
+    ],
+    "C_Cpp.default.configurationProvider": "espressif.esp-idf-extension",
+    "editor.formatOnSave": true,
+    "files.exclude": {
+      "**/.pio": true,
+      "**/.vscode": true
+    },
+    "files.associations": {
+      "esp_eth_phy.h": "c",
+      "esp_netif.h": "c",
+      "sdkconfig.h": "c",
+      "esp_gatt_common_api.h": "c",
+      "uart_handler.h": "c",
+      "event_groups.h": "c",
+      "esp_log.h": "c",
+      "gpio.h": "c",
+      "stdlib.h": "c",
+      "ble_gatt.h": "c",
+      "esp_gap_ble_api.h": "c",
+      "mqtt_manager.h": "c"
+    }
+  }
+}

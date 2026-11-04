@@ -1,0 +1,37 @@
+dependencies:
+  espressif/esp_encrypted_img:
+    component_hash: c04b8f14c45a836b4f9f8dc6e7767a5adc034f00492354423053e042c5aeb342
+    dependencies:
+    - name: espressif/esp_secure_cert_mgr
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: idf_version >= 5.3
+      version: '>=2.5.1'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.7.1
+  espressif/esp_secure_cert_mgr:
+    component_hash: 0b83e150f48d6839f0a0a8753850be55a51cc298cfca7658f21d355d5f41dd67
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 2.9.3
+  idf:
+    source:
+      type: idf
+    version: 5.4.4
+direct_dependencies:
+- espressif/esp_encrypted_img
+- idf
+manifest_hash: f561faa934a658d8e9d8ebfa0af33f8a3156f739ef657ffb76682ccea7edc7db
+target: esp32
+version: 2.0.0
