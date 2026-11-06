@@ -3,7 +3,6 @@
 #include "nvs.h"
 #include "esp_log.h"
 #include "esp_system.h"
-#include "device_restart.h"
 
 #define TAG "NVS_SCHEMA"
 #define NVS_SCHEMA_NAMESPACE "schema"
@@ -68,17 +67,6 @@ void nvs_schema_check(void)
     else
     {
         ESP_LOGE(TAG, "Failed to write schema version after erase");
-    }
-
-    // Record that the NVS was just formatted so the next telemetry identity
-    // reports it. Only do so when this boot followed a software reset
-    // (factory reset, OTA layout bump, remote reboot — all via esp_restart()).
-    // A brand-new device boots via power-on with empty NVS, which also lands
-    // here; in that case leave the reason empty so telemetry reports the
-    // hardware reason (power_on) instead of a misleading "nvs_format".
-    if (esp_reset_reason() == ESP_RST_SW)
-    {
-        device_set_restart_reason("nvs_format");
     }
 }
 

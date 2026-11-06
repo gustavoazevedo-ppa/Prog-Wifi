@@ -38,20 +38,4 @@ void ota_button_init(void);
  */
 bool ota_button_leds_busy(void);
 
-/**
- * @brief Start a remote OTA update (no NVS erase, no LED feedback).
- *
- * Intended to be called from an MQTT command handler.
- * Frees BLE/MQTT memory, checks manifest, downloads + flashes firmware,
- * then resets. Does NOT erase NVS.
- *
- * @param manifest_url  URL of the JSON manifest to use, or NULL for the
- *                      default production manifest.
- *
- * @return ESP_OK on success (device will reset before returning),
- *         ESP_ERR_NOT_FOUND if no update available,
- *         other esp_err_t on failure.
- */
-esp_err_t ota_start_remote(const char *manifest_url);
-
 #endif // OTA_BUTTON_H

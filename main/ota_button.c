@@ -23,13 +23,9 @@
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
 #include "nvs_flash.h"
-#include "esp_bt.h"
-#include "esp_bt_main.h"
 #include "cJSON.h"
 #include "ota_button.h"
-#include "mqtt_manager.h"
 #include "device_info.h"
-#include "onvif_events.h"
 
 #define TAG "OTA_BTN"
 
@@ -110,36 +106,13 @@ static void led_blink_stop(void)
  * -------------------------------------------------------------------------- */
 
 /**
- * @brief Shut down BLE and MQTT to reclaim RAM for TLS/OTA buffers.
- * Since we reset after OTA, there's no need to restart these services.
+ * @brief Log heap state before OTA. This is the hook point for releasing any
+ * application services (tasks, clients) to reclaim RAM for TLS/OTA buffers.
+ * Since we reset after OTA, there's no need to restart them.
  */
 static void free_memory_for_ota(void)
 {
-    ESP_LOGI(TAG, "Free heap before cleanup: %lu bytes", (unsigned long)esp_get_free_heap_size());
-
-    /* Stop all ONVIF camera polling tasks to free heap + network resources */
-    onvif_events_stop_all();
-
-    /* Let FreeRTOS idle task reclaim deleted task memory */
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    /* Stop MQTT client (frees its TLS session + buffers, ~20-30KB) */
-    if (mqtt_client) {
-        esp_mqtt_client_stop(mqtt_client);
-        esp_mqtt_client_destroy(mqtt_client);
-        mqtt_client = NULL;
-        ESP_LOGI(TAG, "MQTT client stopped");
-    }
-
-    /* Release BLE stack (~60KB) */
-    ESP_LOGI(TAG, "Releasing BLE memory...");
-    esp_bluedroid_disable();
-    esp_bluedroid_deinit();
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
-    esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
-
-    ESP_LOGI(TAG, "Free heap after cleanup: %lu bytes (largest block: %lu)",
+    ESP_LOGI(TAG, "Free heap before OTA: %lu bytes (largest block: %lu)",
              (unsigned long)esp_get_free_heap_size(),
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
@@ -574,31 +547,4 @@ void ota_button_init(void)
 bool ota_button_leds_busy(void)
 {
     return s_leds_busy;
-}
-
-esp_err_t ota_start_remote(const char *manifest_url)
-{
-    uint8_t progress = 0;
-
-    /* Mark OTA in progress so packet_manager discards commands */
-    s_leds_busy = true;
-
-    /* Free memory for TLS (BLE release) */
-    free_memory_for_ota();
-
-    ESP_LOGI(TAG, "Remote OTA started");
-
-    /* Use production URL if none specified */
-    if (manifest_url == NULL) {
-        manifest_url = OTA_MANIFEST_URL;
-    }
-
-    esp_err_t result = ota_check_and_apply(manifest_url, &progress);
-
-    if (result != ESP_OK) {
-        /* OTA failed or no update — release the busy flag so the device continues */
-        s_leds_busy = false;
-    }
-
-    return result;
 }
