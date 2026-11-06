@@ -30,12 +30,16 @@
 #include "device_info.h"
 #include "ethernet_manager.h"
 #include "wifi_manager.h"
+#include "mbedtls/base64.h"
+#include "log_server.h"
 #include "preset_server.h"
 
 #define TAG "PRESET"
 
 /* ─── Inline constants (phase 1) ─────────────────────────────────────────── */
 #define PRESET_API_KEY "change-me-prog-key"        /* expected X-API-Key value */
+#define CONSOLE_AUTH_USER "admin"                  /* basic auth for /console */
+#define CONSOLE_AUTH_PASS "change-me-console"
 #define PRESET_FILE_NAME "exemplo.conf"
 #define PRESET_SIM_RUN_MS 5000                     /* simulated run: status 1 -> 2 */
 #define PRESET_SIM_ACTION_TEXT "UART: send preset to DUT and start tests (simulated)"
@@ -869,6 +873,85 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     return err;
 }
 
+/* ─── GET|POST /console : open the log console port (basic auth) ─────────── */
+static bool basic_auth_ok(httpd_req_t *req)
+{
+    char hdr[160];
+    size_t len = httpd_req_get_hdr_value_len(req, "Authorization");
+    if (len == 0 || len >= sizeof(hdr))
+    {
+        return false;
+    }
+    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK ||
+        strncasecmp(hdr, "Basic ", 6) != 0)
+    {
+        return false;
+    }
+    unsigned char decoded[96];
+    size_t dlen = 0;
+    const char *b64 = hdr + 6;
+    while (*b64 == ' ')
+    {
+        b64++;
+    }
+    if (mbedtls_base64_decode(decoded, sizeof(decoded) - 1, &dlen, (const unsigned char *)b64, strlen(b64)) != 0)
+    {
+        return false;
+    }
+    decoded[dlen] = '\0';
+
+    /* Constant-time compare against "user:pass" */
+    const char *expected = CONSOLE_AUTH_USER ":" CONSOLE_AUTH_PASS;
+    size_t elen = strlen(expected);
+    if (dlen != elen)
+    {
+        return false;
+    }
+    unsigned char diff = 0;
+    for (size_t i = 0; i < elen; i++)
+    {
+        diff |= (unsigned char)(decoded[i] ^ (unsigned char)expected[i]);
+    }
+    return diff == 0;
+}
+
+static esp_err_t console_handler(httpd_req_t *req)
+{
+    if (!basic_auth_ok(req))
+    {
+        ESP_LOGW(TAG, "%s /console rejected (401): bad or missing basic auth", req->method == HTTP_POST ? "POST" : "GET");
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"Prog\"");
+        return httpd_resp_send(req, NULL, 0);
+    }
+
+    char msg[128];
+    const char *http = "200 OK";
+    switch (log_server_request_open())
+    {
+    case LOG_OPEN_STARTED:
+        snprintf(msg, sizeof(msg), "Log console open on TCP port %d for %d s. Connect now.\n",
+                 LOG_SERVER_PORT, LOG_SERVER_WINDOW_S);
+        break;
+    case LOG_OPEN_EXTENDED:
+        snprintf(msg, sizeof(msg), "Log console already open on TCP port %d. Window restarted: %d s.\n",
+                 LOG_SERVER_PORT, LOG_SERVER_WINDOW_S);
+        break;
+    case LOG_OPEN_BUSY:
+        http = "409 Conflict";
+        snprintf(msg, sizeof(msg), "Log console in use by another client.\n");
+        break;
+    default:
+        http = "500 Internal Server Error";
+        snprintf(msg, sizeof(msg), "Log console not available.\n");
+        break;
+    }
+    ESP_LOGI(TAG, "/console authenticated: %s", http);
+    httpd_resp_set_status(req, http);
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, msg, HTTPD_RESP_USE_STRLEN);
+}
+
 /* ─── Start ──────────────────────────────────────────────────────────────── */
 void preset_server_start(void)
 {
@@ -895,7 +978,7 @@ void preset_server_start(void)
     config.stack_size = 6144;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 6;
+    config.max_uri_handlers = 8;
     config.recv_wait_timeout = 10;
 
     if (httpd_start(&s_server, &config) != ESP_OK)
@@ -925,6 +1008,18 @@ void preset_server_start(void)
         .method = HTTP_GET,
         .handler = index_get_handler,
     };
+    const httpd_uri_t console_get_uri = {
+        .uri = "/console",
+        .method = HTTP_GET,
+        .handler = console_handler,
+    };
+    const httpd_uri_t console_post_uri = {
+        .uri = "/console",
+        .method = HTTP_POST,
+        .handler = console_handler,
+    };
+    httpd_register_uri_handler(s_server, &console_get_uri);
+    httpd_register_uri_handler(s_server, &console_post_uri);
     httpd_register_uri_handler(s_server, &post_uri);
     httpd_register_uri_handler(s_server, &status_uri);
     httpd_register_uri_handler(s_server, &root_uri);

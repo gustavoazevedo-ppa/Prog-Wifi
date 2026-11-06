@@ -50,3 +50,6 @@ CONFIG_BT_ACL_CONNECTIONS=1
 # cert bundle (OTA) still verify. Revisit before production.
 CONFIG_ESP_TLS_INSECURE=y
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+# Browsers send large headers (cookies, user-agent, authorization). With the
+# default 512 the server answers "431 Request Header Fields Too Large".
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
