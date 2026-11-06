@@ -22,6 +22,7 @@
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
+#include "esp_image_format.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
@@ -846,6 +847,24 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     info_iface(&s, "Ethernet", ethernet_get_netif());
 
     info_row(&s, "Uptime", "%lldd %02lld:%02lld:%02lld", up / 86400, (up / 3600) % 24, (up / 60) % 60, up % 60);
+
+    /* App partition usage: used image length vs. partition size */
+    if (part != NULL)
+    {
+        esp_image_metadata_t meta = {0};
+        const esp_partition_pos_t pos = {.offset = part->address, .size = part->size};
+        if (esp_image_get_metadata(&pos, &meta) == ESP_OK)
+        {
+            info_row(&s, "Partition usage", "%u / %u KB (%.1f%%)",
+                     (unsigned)(meta.image_len / 1024), (unsigned)(part->size / 1024),
+                     100.0 * (double)meta.image_len / (double)part->size);
+        }
+        else
+        {
+            info_row(&s, "Partition usage", "size %u KB (used unknown)", (unsigned)(part->size / 1024));
+        }
+    }
+
     info_row(&s, "Free heap", "%u bytes (min %u)", (unsigned)esp_get_free_heap_size(),
              (unsigned)esp_get_minimum_free_heap_size());
     info_row(&s, "Reset reason", "%s", reset_reason_str(esp_reset_reason()));
