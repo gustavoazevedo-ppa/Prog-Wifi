@@ -203,6 +203,7 @@ Code: `main/preset_server.c` / `preset_server.h`, started from `app_main()`.
 - Worst case `POST` time: 3 preset URLs x 5 s timeout, plus about 2.1 s of emulated UART time for 2 KB. The client timeout should be above 30 s.
 - Outbound HTTPS to the preset server does not verify the certificate (`CONFIG_ESP_TLS_INSECURE` + `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY` in `sdkconfig.defaults`). The OTA code still verifies with the certificate bundle. Revisit before production.
 - `GET /` and `GET /index.html` return an HTML info page for identifying the device on the network. It is **not authenticated** (the network is controlled and exclusive). It shows project name, firmware version, build date and time, ESP-IDF version, hardware version, running OTA partition, Wi-Fi and Ethernet MAC and IP, Wi-Fi SSID and RSSI, uptime, free and minimum free heap, reset reason, and the current test run status and id. No JSON `/info` endpoint for now.
+- Remote log console: raw TCP on port 2323 (`log_server.c`), read-only, one client at a time (a new connection replaces the old one), no authentication. Use `nc {IP} 2323` or `telnet {IP} 2323`. It sends the most recent lines (4 KB ring buffer) and then streams new ones; lines longer than 319 characters are truncated and a "bytes dropped" marker appears if the client falls behind. Logs also still go to the UART.
 - Console log lines are prefixed with `PRESET`.
 
 ## Testing with Postman

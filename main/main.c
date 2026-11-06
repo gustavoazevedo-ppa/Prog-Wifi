@@ -18,6 +18,7 @@
 #include "nvs_schema.h"
 #include "ota_button.h"
 #include "preset_server.h"
+#include "log_server.h"
 #include "esp_ota_ops.h"
 
 #define TAG "APP"
@@ -73,6 +74,9 @@ void app_main(void)
 {
     esp_err_t ret;
 
+    // Capture log output (also for the remote log console) from the very start
+    log_server_install_hook();
+
     // Initialize NVS.
     ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -119,6 +123,9 @@ void app_main(void)
 
     // Local HTTP API (POST /iniciar, GET /status) on Wi-Fi and Ethernet
     preset_server_start();
+
+    // Read-only remote log console (TCP port 2323)
+    log_server_start();
 
     xTaskCreate(status_led_task, "status_led_task", 2048, NULL, 5, NULL);
 
