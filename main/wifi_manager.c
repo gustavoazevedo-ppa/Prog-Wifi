@@ -189,7 +189,7 @@ void wifi_init_sta(void)
     {
         ESP_LOGI(TAG, "No saved credentials");
         // TODO: remove this???
-        // wifi_store_credentials(WIFI_SSID, WIFI_PASS);
+        wifi_store_credentials(WIFI_SSID, WIFI_PASS);
         return;
     }
 
