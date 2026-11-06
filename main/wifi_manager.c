@@ -10,6 +10,7 @@
 
 #define WIFI_SSID "PPA-MINAS"
 #define WIFI_PASS "ppalegero"
+#define WIFI_ENABLED 1 // 1 = Wi-Fi on, 0 = Wi-Fi disabled (driver never started, Ethernet only)
 #define WIFI_MAX_RETRY 1
 #define WIFI_RECONNECT_DELAY_MS 5000 // Base delay for the first delayed reconnect attempt
 
@@ -141,8 +142,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+bool wifi_is_enabled(void)
+{
+    return WIFI_ENABLED != 0;
+}
+
 void wifi_init_sta(void)
 {
+    if (!WIFI_ENABLED)
+    {
+        ESP_LOGW(TAG, "Wi-Fi disabled (WIFI_ENABLED=0): driver not started");
+        return;
+    }
+
     if (!s_wifi_init)
     {
         s_wifi_event_group = xEventGroupCreate();

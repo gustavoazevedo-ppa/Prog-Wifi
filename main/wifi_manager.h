@@ -9,6 +9,7 @@
 #define WIFI_FAIL_BIT BIT1
 
 void wifi_init_sta(void);
+bool wifi_is_enabled(void); // false when WIFI_ENABLED is 0 in wifi_manager.c
 bool wifi_store_credentials(const char *ssid, const char *pass);
 bool wifi_load_credentials(char *ssid_out, size_t ssid_out_len,
                            char *pass_out, size_t pass_out_len);

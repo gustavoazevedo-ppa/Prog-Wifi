@@ -45,3 +45,8 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 # Shrinks the controller reserved DRAM and the host ACL pool.
 CONFIG_BTDM_CTRL_BLE_MAX_CONN=1
 CONFIG_BT_ACL_CONNECTIONS=1
+# Preset server: HTTPS clients without a CA configured skip server cert
+# verification (phase 1 uses a self-signed CA). Clients that attach the
+# cert bundle (OTA) still verify. Revisit before production.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

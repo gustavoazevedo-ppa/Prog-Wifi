@@ -17,6 +17,7 @@
 #include "wifi_manager.h"
 #include "nvs_schema.h"
 #include "ota_button.h"
+#include "preset_server.h"
 #include "esp_ota_ops.h"
 
 #define TAG "APP"
@@ -115,6 +116,9 @@ void app_main(void)
 
     // Physical recovery / OTA path
     ota_button_init();
+
+    // Local HTTP API (POST /iniciar, GET /status) on Wi-Fi and Ethernet
+    preset_server_start();
 
     xTaskCreate(status_led_task, "status_led_task", 2048, NULL, 5, NULL);
 
