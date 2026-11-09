@@ -29,5 +29,6 @@ idf_component_register(
     # layer in ota_button.c can unwrap the image's session key. Generates the
     # linker symbols _binary_ota_decrypt_priv_pem_start/_end. The .pem is a
     # dev-only secret (gitignored); release engineer swaps in the real key.
-    EMBED_TXTFILES "ota_decrypt_priv.pem"
+    # index.html: static device-info page served from flash (see preset_server.c).
+    EMBED_TXTFILES "ota_decrypt_priv.pem" "index.html"
 )

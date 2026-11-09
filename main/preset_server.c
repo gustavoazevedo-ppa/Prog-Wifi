@@ -698,87 +698,27 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     return send_status(req, "200 OK", &st);
 }
 
-/* ─── GET / and /index.html : unauthenticated device info page ───────────── */
-#define INFO_PAGE_CAP 3072
+/* ─── Static assets (embedded in flash) ───────────────────────────────────
+ * To move assets to SPIFFS/LittleFS later, only serve_asset() callers change. */
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[] asm("_binary_index_html_end");
 
-typedef struct
+/* EMBED_TXTFILES appends a NUL byte, which is not part of the content. */
+static esp_err_t serve_asset(httpd_req_t *req, const char *type, const uint8_t *start, const uint8_t *end,
+                             const char *cache_control)
 {
-    char *buf;
-    size_t len;
-} sb_t;
-
-static void sb_add(sb_t *s, const char *fmt, ...)
-{
-    if (s->len >= INFO_PAGE_CAP - 1)
-    {
-        return;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(s->buf + s->len, INFO_PAGE_CAP - s->len, fmt, ap);
-    va_end(ap);
-    if (n > 0)
-    {
-        s->len += ((size_t)n < INFO_PAGE_CAP - s->len) ? (size_t)n : (INFO_PAGE_CAP - s->len - 1);
-    }
+    httpd_resp_set_type(req, type);
+    httpd_resp_set_hdr(req, "Cache-Control", cache_control);
+    return httpd_resp_send(req, (const char *)start, (ssize_t)(end - start - 1));
 }
 
-/* Append text with HTML escaping (SSID and other external strings) */
-static void sb_add_esc(sb_t *s, const char *txt)
+/* ─── GET / and /index.html : static, unauthenticated page ───────────────── */
+static esp_err_t index_get_handler(httpd_req_t *req)
 {
-    for (; *txt; txt++)
-    {
-        switch (*txt)
-        {
-        case '<': sb_add(s, "&lt;"); break;
-        case '>': sb_add(s, "&gt;"); break;
-        case '&': sb_add(s, "&amp;"); break;
-        case '"': sb_add(s, "&quot;"); break;
-        default:
-            sb_add(s, "%c", ((unsigned char)*txt < 0x20 || (unsigned char)*txt > 0x7E) ? '?' : *txt);
-        }
-    }
+    return serve_asset(req, "text/html", index_html_start, index_html_end, "no-cache");
 }
 
-static void info_row(sb_t *s, const char *label, const char *fmt, ...)
-{
-    char val[160];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(val, sizeof(val), fmt, ap);
-    va_end(ap);
-    sb_add(s, "<tr><th>%s</th><td>", label);
-    sb_add_esc(s, val);
-    sb_add(s, "</td></tr>");
-}
-
-static void info_iface(sb_t *s, const char *name, esp_netif_t *netif)
-{
-    char label[40];
-    uint8_t mac[6];
-    esp_netif_ip_info_t ip;
-    if (netif == NULL)
-    {
-        snprintf(label, sizeof(label), "%s", name);
-        info_row(s, label, "not available");
-        return;
-    }
-    if (esp_netif_get_mac(netif, mac) == ESP_OK)
-    {
-        snprintf(label, sizeof(label), "%s MAC", name);
-        info_row(s, label, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    }
-    snprintf(label, sizeof(label), "%s IP", name);
-    if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0)
-    {
-        info_row(s, label, IPSTR, IP2STR(&ip.ip));
-    }
-    else
-    {
-        info_row(s, label, "no IP");
-    }
-}
-
+/* ─── GET /info : unauthenticated device info (JSON) ─────────────────────── */
 static const char *reset_reason_str(esp_reset_reason_t r)
 {
     switch (r)
@@ -796,99 +736,151 @@ static const char *reset_reason_str(esp_reset_reason_t r)
     }
 }
 
-static esp_err_t index_get_handler(httpd_req_t *req)
+/* Add {"mac": "...", "ip": "..."|null} (or null when the interface does not exist) */
+static void json_add_iface(cJSON *parent, const char *key, esp_netif_t *netif)
 {
-    char *page = malloc(INFO_PAGE_CAP);
-    if (page == NULL)
+    if (netif == NULL)
     {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        cJSON_AddNullToObject(parent, key);
+        return;
     }
-    sb_t s = {.buf = page, .len = 0};
-    page[0] = '\0';
-
-    const esp_app_desc_t *app = esp_app_get_description();
-    const esp_partition_t *part = esp_ota_get_running_partition();
-    int64_t up = esp_timer_get_time() / 1000000LL;
-    run_state_t st;
-    state_snapshot(&st);
-
-    sb_add(&s,
-           "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-           "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-           "<title>Prog Wi-Fi</title>"
-           "<style>body{font-family:sans-serif;margin:1.5em}table{border-collapse:collapse}"
-           "th,td{text-align:left;padding:.3em .8em;border-bottom:1px solid #ddd}"
-           "th{color:#555;font-weight:600}</style></head><body><h1>Prog Wi-Fi</h1><table>");
-
-    info_row(&s, "Project", "%s", app->project_name);
-    info_row(&s, "Firmware version", "%s", app->version);
-    info_row(&s, "Build", "%s %s", app->date, app->time);
-    info_row(&s, "ESP-IDF", "%s", app->idf_ver);
-    info_row(&s, "Hardware version", "%d", HW_VERSION);
-    info_row(&s, "Running partition", "%s", part != NULL ? part->label : "?");
-
-    if (!wifi_is_enabled())
+    cJSON *o = cJSON_AddObjectToObject(parent, key);
+    if (o == NULL)
     {
-        info_row(&s, "Wi-Fi", "DISABLED (WIFI_ENABLED = 0 in firmware)");
+        return;
+    }
+    uint8_t mac[6];
+    char buf[24];
+    if (esp_netif_get_mac(netif, mac) == ESP_OK)
+    {
+        snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        cJSON_AddStringToObject(o, "mac", buf);
     }
     else
     {
-        info_iface(&s, "Wi-Fi", wifi_get_netif());
-        wifi_ap_record_t ap;
-        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+        cJSON_AddNullToObject(o, "mac");
+    }
+    esp_netif_ip_info_t ip;
+    if (esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0)
+    {
+        snprintf(buf, sizeof(buf), IPSTR, IP2STR(&ip.ip));
+        cJSON_AddStringToObject(o, "ip", buf);
+    }
+    else
+    {
+        cJSON_AddNullToObject(o, "ip");
+    }
+}
+
+static esp_err_t info_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL)
+    {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+
+    const esp_app_desc_t *app = esp_app_get_description();
+    const esp_partition_t *part = esp_ota_get_running_partition();
+    char buf[64];
+
+    cJSON_AddStringToObject(root, "project", app->project_name);
+    cJSON_AddStringToObject(root, "version", app->version);
+    snprintf(buf, sizeof(buf), "%s %s", app->date, app->time);
+    cJSON_AddStringToObject(root, "build", buf);
+    cJSON_AddStringToObject(root, "idf", app->idf_ver);
+    cJSON_AddNumberToObject(root, "hw_version", HW_VERSION);
+    cJSON_AddStringToObject(root, "partition", part != NULL ? part->label : "?");
+
+    /* Wi-Fi */
+    cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
+    if (wifi != NULL)
+    {
+        cJSON_AddBoolToObject(wifi, "enabled", wifi_is_enabled());
+        if (wifi_is_enabled())
         {
-            info_row(&s, "Wi-Fi SSID", "%s (%d dBm)", (const char *)ap.ssid, ap.rssi);
-        }
-        else
-        {
-            info_row(&s, "Wi-Fi SSID", "not connected");
+            json_add_iface(wifi, "iface", wifi_get_netif());
+            wifi_ap_record_t ap;
+            if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+            {
+                char ssid[sizeof(ap.ssid) + 1];
+                size_t k = 0;
+                for (; k < sizeof(ap.ssid) && ap.ssid[k]; k++) /* ASCII only, valid JSON/UTF-8 */
+                {
+                    ssid[k] = (ap.ssid[k] >= 0x20 && ap.ssid[k] <= 0x7E) ? (char)ap.ssid[k] : '?';
+                }
+                ssid[k] = '\0';
+                cJSON_AddStringToObject(wifi, "ssid", ssid);
+                cJSON_AddNumberToObject(wifi, "rssi", ap.rssi);
+            }
+            else
+            {
+                cJSON_AddNullToObject(wifi, "ssid");
+            }
         }
     }
-    info_iface(&s, "Ethernet", ethernet_get_netif());
+    json_add_iface(root, "ethernet", ethernet_get_netif());
 
-    info_row(&s, "Uptime", "%lldd %02lld:%02lld:%02lld", up / 86400, (up / 3600) % 24, (up / 60) % 60, up % 60);
+    cJSON_AddNumberToObject(root, "uptime_s", (double)(esp_timer_get_time() / 1000000LL));
 
     /* App partition usage: used image length vs. partition size */
     if (part != NULL)
     {
-        esp_image_metadata_t meta = {0};
-        const esp_partition_pos_t pos = {.offset = part->address, .size = part->size};
-        if (esp_image_get_metadata(&pos, &meta) == ESP_OK)
+        cJSON *pu = cJSON_AddObjectToObject(root, "partition_usage");
+        if (pu != NULL)
         {
-            info_row(&s, "Partition usage", "%u / %u KB (%.1f%%)",
-                     (unsigned)(meta.image_len / 1024), (unsigned)(part->size / 1024),
-                     100.0 * (double)meta.image_len / (double)part->size);
-        }
-        else
-        {
-            info_row(&s, "Partition usage", "size %u KB (used unknown)", (unsigned)(part->size / 1024));
+            esp_image_metadata_t meta = {0};
+            const esp_partition_pos_t pos = {.offset = part->address, .size = part->size};
+            cJSON_AddNumberToObject(pu, "total_kb", part->size / 1024);
+            if (esp_image_get_metadata(&pos, &meta) == ESP_OK)
+            {
+                cJSON_AddNumberToObject(pu, "used_kb", meta.image_len / 1024);
+                cJSON_AddNumberToObject(pu, "percent", 100.0 * (double)meta.image_len / (double)part->size);
+            }
         }
     }
 
-    info_row(&s, "Free heap", "%u bytes (min %u)", (unsigned)esp_get_free_heap_size(),
-             (unsigned)esp_get_minimum_free_heap_size());
-    info_row(&s, "Reset reason", "%s", reset_reason_str(esp_reset_reason()));
-
-    static const char *const run_txt[] = {"idle", "running", "finished OK", "finished with error"};
-    info_row(&s, "Test run", "%s", run_txt[st.status & 3]);
-    if (st.status != ST_IDLE)
+    cJSON *heap = cJSON_AddObjectToObject(root, "heap");
+    if (heap != NULL)
     {
-        if (st.id_is_string)
+        cJSON_AddNumberToObject(heap, "free", esp_get_free_heap_size());
+        cJSON_AddNumberToObject(heap, "min_free", esp_get_minimum_free_heap_size());
+    }
+    cJSON_AddStringToObject(root, "reset_reason", reset_reason_str(esp_reset_reason()));
+
+    /* Test run */
+    static const char *const run_txt[] = {"idle", "running", "finished OK", "finished with error"};
+    run_state_t st;
+    state_snapshot(&st);
+    cJSON *run = cJSON_AddObjectToObject(root, "test_run");
+    if (run != NULL)
+    {
+        cJSON_AddNumberToObject(run, "status", st.status);
+        cJSON_AddStringToObject(run, "status_text", run_txt[st.status & 3]);
+        if (st.status == ST_IDLE)
         {
-            info_row(&s, "Test run id", "%s", st.id_str);
+            cJSON_AddNullToObject(run, "id");
+        }
+        else if (st.id_is_string)
+        {
+            cJSON_AddStringToObject(run, "id", st.id_str);
         }
         else
         {
-            info_row(&s, "Test run id", "%.0f", st.id_num);
+            cJSON_AddNumberToObject(run, "id", st.id_num);
         }
     }
 
-    sb_add(&s, "</table></body></html>");
-
-    httpd_resp_set_type(req, "text/html");
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL)
+    {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+    }
+    httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    esp_err_t err = httpd_resp_send(req, page, (ssize_t)s.len);
-    free(page);
+    esp_err_t err = httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    free(json);
     return err;
 }
 
@@ -1039,6 +1031,12 @@ void preset_server_start(void)
     };
     httpd_register_uri_handler(s_server, &console_get_uri);
     httpd_register_uri_handler(s_server, &console_post_uri);
+    const httpd_uri_t info_uri = {
+        .uri = "/info",
+        .method = HTTP_GET,
+        .handler = info_get_handler,
+    };
+    httpd_register_uri_handler(s_server, &info_uri);
     httpd_register_uri_handler(s_server, &post_uri);
     httpd_register_uri_handler(s_server, &status_uri);
     httpd_register_uri_handler(s_server, &root_uri);
