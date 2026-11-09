@@ -18,9 +18,11 @@ The Stinger (client) tells the Prog to start a test run for a product. It sends 
 Stinger                                   Prog
    |  POST /iniciar {id, produto, ...}      |
    |--------------------------------------->|  resolve + download exemplo.conf
-   |                                        |  (future: send to DUT via UART)
-   |  200 OK (status object)                |
+   |                                        |  preset now in memory
+   |  200 OK (status object, status 1)      |
    |<---------------------------------------|
+   |                                        |  uart_task (separate): send to DUT
+   |                                        |  via UART, then run the tests
    |                                        |
    |  GET /status   (every X seconds)       |
    |--------------------------------------->|
@@ -114,9 +116,10 @@ If none exist, the start fails (see error handling, still to be defined).
 
 ### Timing
 
-- The `POST` replies only after the preset has been handled, not right away.
-- In the final version "handled" includes transmitting the binary to the DUT over a 9600 bps UART. For 2 KB that is roughly 2 to 3 seconds of transmission time (10 bits per byte at 9600 bps is about 2.1 s), plus download time.
-- The Stinger HTTP client timeout must account for this.
+- The `POST` replies as soon as the preset has been downloaded, validated and is in memory. It does **not** wait for the UART transfer or for the end of the test.
+- The transfer of the binary to the DUT over a 9600 bps UART (about 2.1 s for 2 KB: 10 bits per byte) and the test run happen in a separate task (`uart_task`). They never delay the `POST` reply.
+- Feedback is given only by `GET /status`: `status: 1` while the UART transfer and the test run, then `2` or `3`.
+- The Stinger HTTP client timeout only has to cover the preset download (worst case 3 URLs x 5 s).
 
 ### Response
 
@@ -168,7 +171,7 @@ Returns the state of the current run. Polled by the Stinger every X seconds. Req
 ## Typical flow
 
 1. Stinger sends `POST /iniciar` with the run info and `X-API-Key`.
-2. Prog resolves and downloads `exemplo.conf`, logs its content (later: sends it over UART), starts the tests, replies `200`.
+2. Prog resolves and downloads `exemplo.conf`, keeps it in memory and replies `200` right away. A separate task then sends it over UART (emulated for now) and runs the tests.
 3. Stinger polls `GET /status` every X seconds.
 4. When `status` is `2` or `3`, the Stinger stops polling.
 
@@ -178,7 +181,7 @@ Details are still missing and the spec will be updated as the project goes. Unti
 
 1. **Simulated run:** after a successful `POST`, the run reports `status: 1` for a few seconds (constant defined inline), then `status: 2`.
 2. **Test action:** the future UART action is a log line built from an inline static constant.
-3. **UART delay:** emulate the transmission time (about `bytes * 10 / 9600` s) so the Stinger timeout is tested realistically.
+3. **UART delay:** emulate the transmission time (about `bytes * 10 / 9600` s) inside `uart_task`, before the simulated run starts. It does not delay the `POST` reply. The `status` stays `1` during this time.
 4. **`GET /status` with no run yet (or after reboot):** `200` with `{"id": 0, "status": 0, "message": []}` (idle). Value `0` is an addition to the agreed 1/2/3 and must be confirmed with the Stinger side.
 5. **Final status retention:** kept until the next `POST /iniciar` is accepted or the device reboots.
 6. **Path safety:** `cliente` and `estado` are rejected (400) if they contain `/`, `\` or `..`.
@@ -188,7 +191,7 @@ Details are still missing and the spec will be updated as the project goes. Unti
 
 - Which HTTP call the Stinger uses (`FWRest`, `HttpPost`, ...) and whether it sends `Content-Type: application/json`.
 - Whether it can read the body of non-200 responses.
-- Polling interval (X seconds) and request timeout. The timeout must exceed download plus UART time.
+- Polling interval (X seconds) and request timeout. The timeout must exceed the preset download time (the UART transfer is not part of the `POST`).
 - Whether `id` is always a number or sometimes a padded string.
 - `exemplo.conf` exact format details and CA used by `preset.ppa.com.br`.
 
@@ -197,11 +200,11 @@ Details are still missing and the spec will be updated as the project goes. Unti
 Code: `main/preset_server.c` / `preset_server.h`, started from `app_main()`.
 
 - Listens on port 80 on all interfaces (Wi-Fi and Ethernet).
-- Inline constants at the top of `preset_server.c`: `PRESET_API_KEY` (default `change-me-prog-key`, change it), `PRESET_SIM_RUN_MS` (simulated run, 5000 ms), `PRESET_SIM_ACTION_TEXT`, `PRESET_FETCH_TIMEOUT_MS` (5000 ms per preset URL), `PRESET_MAX_HEX_CHARS`.
+- Inline constants at the top of `preset_server.c`: `PRESET_API_KEY` (currently `abcdef12345XYZ`, change it), `PRESET_SIM_RUN_MS` (simulated run, 5000 ms), `PRESET_SIM_ACTION_TEXT`, `PRESET_FETCH_TIMEOUT_MS` (5000 ms per preset URL), `PRESET_MAX_HEX_CHARS`.
 - A `400` reply does not change the stored run state (the start was never attempted). `404` and `500` after the request was accepted do set `status: 3`.
-- `POST /iniciar` is validated and accepted in the HTTP task, then handed to a worker task (`preset_worker`) using the async handler API of `esp_http_server`. The worker downloads the preset, runs the (simulated) UART step and sends the reply. The HTTP task stays free, so `GET /status` answers right away (status 1 while the preset is being handled) and a second `POST` gets `409` immediately.
+- `POST /iniciar` is validated and accepted in the HTTP task, then handed to a worker task (`preset_worker`) using the async handler API of `esp_http_server`. The worker downloads and decodes the preset, then notifies a third task (`uart_task`, `preset_uart`) and sends the reply. `uart_task` does the (emulated) UART transfer and then the (simulated) test run, so neither delays the reply. The HTTP task stays free, so `GET /status` answers right away (status 1 while the preset is downloaded, transferred and tested) and a second `POST` gets `409` immediately until the run ends. Replace the body of `uart_task` when the real UART protocol exists.
 - The busy check and the acceptance are one atomic step, so two simultaneous `POST`s cannot both start a run.
-- Worst case `POST` time: 3 preset URLs x 5 s timeout, plus about 2.1 s of emulated UART time for 2 KB. The client timeout should be above 30 s.
+- Worst case `POST` time: 3 preset URLs x 5 s timeout (the UART transfer is not included). The client timeout should be above 15 s, 30 s is a safe value.
 - Outbound HTTPS to the preset server does not verify the certificate (`CONFIG_ESP_TLS_INSECURE` + `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY` in `sdkconfig.defaults`). The OTA code still verifies with the certificate bundle. Revisit before production.
 - `GET /` and `GET /index.html` serve a **static** HTML page (`main/index.html`, embedded in flash with `EMBED_TXTFILES`, served by `serve_asset()` in `preset_server.c`). Its inline JavaScript fetches `GET /info` and fills the table once on load (reload the page to refresh; there is no auto refresh). Neither route is authenticated (the network is controlled and exclusive). To move the page to SPIFFS/LittleFS later, only the `serve_asset()` callers change.
 - `GET /info` returns the device information as JSON, unauthenticated. Fields: `project`, `version`, `build`, `idf`, `hw_version`, `partition`, `wifi` (`enabled`, and when enabled `iface` {`mac`,`ip`}, `ssid`, `rssi`), `ethernet` ({`mac`,`ip`,`link_up`,`speed_mbps`,`duplex`} or null; `speed_mbps` is 10 or 100 and `duplex` is `"half"` or `"full"`, both null while the link is down), `uptime_s`, `partition_usage` (`total_kb`, `used_kb`, `percent`), `heap` (`free`, `min_free`, and for the DMA-capable heap `dma_free`, `dma_min_free` = lowest ever, `dma_largest` = largest free block), `reset_reason`, `boot_count` (every boot, persistent), `panic_count` (cumulative boots after a panic or watchdog reset, persistent), `ota_state` (state of the running image: `new`, `pending_verify`, `valid`, `invalid`, `aborted`, `undefined`; null when no OTA state is recorded, e.g. after flashing over serial), `test_run` (`status`, `status_text`, `id`). Missing values are `null`. Keep the keys in sync with `main/index.html`.
@@ -214,7 +217,7 @@ Code: `main/preset_server.c` / `preset_server.h`, started from `app_main()`.
   - On connect it sends the most recent lines (4 KB ring buffer) and then streams new ones. Lines longer than 319 characters are truncated, and a "bytes dropped" marker appears if the client falls behind. Logs also still go to the UART.
   - The basic auth credentials travel in clear text over HTTP and there is no attempt limit, which is acceptable only on the controlled network.
 - Console log lines are prefixed with `PRESET`.
-- Request log (`main/http_log.c`): every HTTP request writes one line with tag `HTTP`: client IP, method, URI (with query, never headers or bodies), the status sent and the time spent, e.g. `192.168.1.20 GET /status -> 200 (3 ms, stack_free_min=5200)`. `stack_free_min` is the lowest free stack, in bytes, the HTTP server task (8192 bytes) has ever had; below 1024 the line is marked `LOW` and logged as a warning. Status 400 and above is also logged as a warning. It covers unknown paths and wrong methods too (`404`, `405`). `POST /iniciar` is logged when the worker sends the reply, so its time includes the preset download. Lines go to the UART and to the remote log console. To silence them: `esp_log_level_set("HTTP", ESP_LOG_WARN)`. New handlers must be registered with `http_log_register()` (not `httpd_register_uri_handler()`) and set non-200 statuses with `http_log_set_status()` / `http_log_send_err()`, otherwise they are logged as `200`.
+- Request log (`main/http_log.c`): every HTTP request writes one line with tag `HTTP`: client IP, method, URI (with query, never headers or bodies), the status sent and the time spent, e.g. `192.168.1.20 GET /status -> 200 (3 ms, stack_free_min=5200)`. `stack_free_min` is the lowest free stack, in bytes, the HTTP server task (8192 bytes) has ever had; below 1024 the line is marked `LOW` and logged as a warning. Status 400 and above is also logged as a warning. It covers unknown paths and wrong methods too (`404`, `405`). `POST /iniciar` is logged when the worker sends the reply, so its time includes the preset download but not the UART transfer or the test. Lines go to the UART and to the remote log console. To silence them: `esp_log_level_set("HTTP", ESP_LOG_WARN)`. New handlers must be registered with `http_log_register()` (not `httpd_register_uri_handler()`) and set non-200 statuses with `http_log_set_status()` / `http_log_send_err()`, otherwise they are logged as `200`.
 
 ## Admin endpoints (field maintenance)
 
@@ -317,7 +320,7 @@ Code: `main/admin_api.c` / `admin_api.h`, registered by `preset_server_start()` 
 
 ## Testing with Postman
 
-Replace `{IP}` with the Prog IP (Wi-Fi or Ethernet). Add the header `X-API-Key: change-me-prog-key` to every request (or set it as a collection-level header).
+Replace `{IP}` with the Prog IP (Wi-Fi or Ethernet). Add the header `X-API-Key: abcdef12345XYZ` to every request (or set it as a collection-level header).
 
 ### 1. Start a run
 
@@ -336,7 +339,7 @@ Replace `{IP}` with the Prog IP (Wi-Fi or Ethernet). Add the header `X-API-Key: 
 }
 ```
 
-Expected: `200` and `{"id":1234,"status":1,"message":[]}`. The console shows the preset content and the simulated UART action.
+Expected: `200` and `{"id":1234,"status":1,"message":[]}`. The reply comes right after the download. The console then shows the preset content and the simulated UART action (from `uart_task`).
 
 ### 2. Poll the status
 

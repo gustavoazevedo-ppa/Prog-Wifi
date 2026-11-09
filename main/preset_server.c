@@ -91,6 +91,7 @@ typedef struct
 static run_state_t s_state;
 static SemaphoreHandle_t s_lock;
 static esp_timer_handle_t s_sim_timer;
+static TaskHandle_t s_uart_task;
 static httpd_handle_t s_server;
 
 /* ─── Small data helpers ─────────────────────────────────────────────────── */
@@ -959,18 +960,43 @@ static void run_job(job_t *job)
     free(ctx.buf);
     free(clean);
 
-    /* Emulate UART transmit time so the Stinger timeout is exercised realistically */
-    uint32_t tx_ms = ((uint32_t)nbytes * 10u * 1000u) / PRESET_UART_BAUD + 1u;
-    vTaskDelay(pdMS_TO_TICKS(tx_ms));
-
+    /* The preset is in memory: the run stays "running" (status 1) and the UART transfer
+     * plus the test happen in uart_task. The POST is answered right now, it does not wait
+     * for them. Progress and result are reported by GET /status. */
     st.msg_count = 0; /* success: drop the "not found" notes of skipped locations */
     st.status = ST_RUNNING;
     state_commit(&st);
-    esp_timer_stop(s_sim_timer); /* ignore error if not running */
-    esp_timer_start_once(s_sim_timer, (uint64_t)PRESET_SIM_RUN_MS * 1000ULL);
-    ESP_LOGI(TAG, "run %.0f started (simulated, finishes in %d ms)", st.id_num, PRESET_SIM_RUN_MS);
+    ESP_LOGI(TAG, "run %.0f: preset in memory (%d bytes), UART transfer handed to uart_task", st.id_num, nbytes);
+    xTaskNotify(s_uart_task, (uint32_t)nbytes, eSetValueWithOverwrite);
 
     job_finish(job, "200 OK", &st);
+}
+
+/* UART transfer + test run, in its own task so it never delays the POST /iniciar reply.
+ * Only one run is active at a time (409 otherwise), so s_preset_bin is not rewritten
+ * while this task reads it. Today the transfer is emulated (delay at 9600 bps) and the
+ * test is simulated; replace the body between the markers when the UART protocol exists. */
+static void uart_task(void *arg)
+{
+    while (1)
+    {
+        uint32_t nbytes = 0;
+        if (xTaskNotifyWait(0, UINT32_MAX, &nbytes, portMAX_DELAY) != pdTRUE)
+        {
+            continue;
+        }
+
+        /* --- UART transfer (emulated) --- */
+        ESP_LOGI(TAG, "%s", PRESET_SIM_ACTION_TEXT);
+        uint32_t tx_ms = (nbytes * 10u * 1000u) / PRESET_UART_BAUD + 1u;
+        vTaskDelay(pdMS_TO_TICKS(tx_ms));
+
+        /* --- Test run (simulated): status 1 -> 2 when the timer fires --- */
+        esp_timer_stop(s_sim_timer); /* ignore error if not running */
+        esp_timer_start_once(s_sim_timer, (uint64_t)PRESET_SIM_RUN_MS * 1000ULL);
+        ESP_LOGI(TAG, "UART transfer done (%u bytes), test run started (simulated, finishes in %d ms)",
+                 (unsigned)nbytes, PRESET_SIM_RUN_MS);
+    }
 }
 
 static void worker_task(void *arg)
@@ -1399,6 +1425,7 @@ void preset_server_start(void)
         .name = "sim_run",
     };
     if (s_lock == NULL || s_data_lock == NULL || s_job_queue == NULL || esp_timer_create(&targs, &s_sim_timer) != ESP_OK ||
+        xTaskCreate(uart_task, "preset_uart", 3072, NULL, 4, &s_uart_task) != pdPASS ||
         xTaskCreate(worker_task, "preset_worker", 12288, NULL, 5, NULL) != pdPASS) /* runs the TLS client */
     {
         ESP_LOGE(TAG, "init failed (mutex/queue/timer/worker)");
