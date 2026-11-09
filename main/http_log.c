@@ -101,7 +101,16 @@ static void peer_str(httpd_req_t *req, char *out, size_t n)
     }
 }
 
-static void log_line(httpd_req_t *req, int status, int64_t t0_us)
+/* Lowest free stack (bytes) the calling task has ever had. ESP-IDF reports it in bytes. */
+int http_log_stack_free_min(void)
+{
+    return (int)uxTaskGetStackHighWaterMark(NULL);
+}
+
+/* stack_free < 0: not known (reply sent by another task). Below this the line is a warning. */
+#define STACK_LOW_BYTES 1024
+
+static void log_line(httpd_req_t *req, int status, int64_t t0_us, int stack_free)
 {
     char ip[48];
     char uri[URI_LOG_LEN];
@@ -117,11 +126,30 @@ static void log_line(httpd_req_t *req, int status, int64_t t0_us)
     uri[i] = '\0';
 
     const char *method = http_method_str((enum http_method)req->method);
-    esp_log_level_t level = (status >= 400) ? ESP_LOG_WARN : ESP_LOG_INFO;
+    const bool stack_low = (stack_free >= 0 && stack_free < STACK_LOW_BYTES);
+    esp_log_level_t level = (status >= 400 || stack_low) ? ESP_LOG_WARN : ESP_LOG_INFO;
+
+    /* Integers only: formatting a double here would need much more stack. */
+    char tail[64];
+    int n = 0;
     if (t0_us > 0)
     {
-        ESP_LOG_LEVEL(level, TAG, "%s %s %s -> %d (%lld ms)", ip, method ? method : "?", uri, status,
-                      (long long)((esp_timer_get_time() - t0_us) / 1000));
+        n += snprintf(tail + n, sizeof(tail) - n, " (%lld ms", (long long)((esp_timer_get_time() - t0_us) / 1000));
+    }
+    else
+    {
+        n += snprintf(tail + n, sizeof(tail) - n, " (");
+    }
+    if (stack_free >= 0)
+    {
+        n += snprintf(tail + n, sizeof(tail) - n, "%sstack_free_min=%d%s", t0_us > 0 ? ", " : "", stack_free,
+                      stack_low ? " LOW" : "");
+    }
+    snprintf(tail + n, sizeof(tail) - n, ")");
+
+    if (t0_us > 0 || stack_free >= 0)
+    {
+        ESP_LOG_LEVEL(level, TAG, "%s %s %s -> %d%s", ip, method ? method : "?", uri, status, tail);
     }
     else
     {
@@ -149,7 +177,7 @@ static esp_err_t logged_handler(httpd_req_t *req)
         {
             s_status = 500; /* handler failed before replying: the connection is closed */
         }
-        log_line(req, s_status, t0);
+        log_line(req, s_status, t0, http_log_stack_free_min());
     }
     return err;
 }
@@ -178,7 +206,7 @@ esp_err_t http_log_register(httpd_handle_t server, const httpd_uri_t *uri)
 /* ─── 404 / 405: requests that never reach a handler ─────────────────────── */
 static esp_err_t error_handler(httpd_req_t *req, httpd_err_code_t error)
 {
-    log_line(req, err_code_to_int(error), 0);
+    log_line(req, err_code_to_int(error), 0, http_log_stack_free_min());
     return httpd_resp_send_err(req, error, NULL); /* the standard reply */
 }
 
@@ -212,7 +240,7 @@ void http_log_async_detach(void)
     s_async = true;
 }
 
-void http_log_async_done(httpd_req_t *req, const char *status, int64_t t0_us)
+void http_log_async_done(httpd_req_t *req, const char *status, int64_t t0_us, int stack_free)
 {
-    log_line(req, atoi(status), t0_us);
+    log_line(req, atoi(status), t0_us, stack_free);
 }

@@ -342,6 +342,7 @@ typedef struct
     bool has_crc;
     uint32_t crc;
     int64_t t0_us; /* when the request arrived, for the request log */
+    int stack_hw;  /* httpd task stack, lowest free bytes seen while handling it */
 } job_t;
 
 static QueueHandle_t s_job_queue;
@@ -644,24 +645,29 @@ static void sim_run_done_cb(void *arg)
     }
 }
 
-/* ─── POST /iniciar ──────────────────────────────────────────────────────── */
-static esp_err_t iniciar_post_handler(httpd_req_t *req)
+/* ─── POST /iniciar ────────────────────────────────────────────────────────
+ * Works on heap memory. The httpd task has a small stack and this handler used to keep
+ * about 3.9 KB of buffers on it (request body, three run states, the text fields). A log
+ * call that formats a double on top of that overflowed it. Everything big now lives in
+ * job_t (kept for the worker) and iniciar_tmp_t (freed before the handler returns). */
+typedef struct
 {
-    s_req_seq = hist_begin();
-    if (!auth_ok(req))
-    {
-        hist_end(s_req_seq, 401, PRESET_LVL_NA, 0, false, 0);
-        return send_unauthorized(req);
-    }
+    char body[PRESET_MAX_BODY];
+    char produto[PRESET_FIELD_LEN];
+    run_state_t other; /* the run in progress (409), or the "update in progress" reply */
+} iniciar_tmp_t;
+
+/* Returns the handler result. *handed_off is set when job now belongs to the worker. */
+static esp_err_t iniciar_process(httpd_req_t *req, job_t *job, iniciar_tmp_t *tmp, bool *handed_off)
+{
+    run_state_t *st = &job->st;
 
     /* --- Parse body --- */
-    char body[PRESET_MAX_BODY];
-    run_state_t st = {0};
-    if (read_body(req, body, sizeof(body)) < 0)
+    if (read_body(req, tmp->body, sizeof(tmp->body)) < 0)
     {
         return send_bad_request(req, NULL, "empty, unreadable or too large body");
     }
-    cJSON *root = cJSON_Parse(body);
+    cJSON *root = cJSON_Parse(tmp->body);
     if (root == NULL || !cJSON_IsObject(root))
     {
         cJSON_Delete(root);
@@ -672,22 +678,22 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
     if (cJSON_IsNumber(id))
     {
-        st.id_num = id->valuedouble;
+        st->id_num = id->valuedouble;
     }
     else if (cJSON_IsString(id) && id->valuestring != NULL)
     {
-        snprintf(st.id_str, sizeof(st.id_str), "%s", id->valuestring);
-        char *t = trim(st.id_str);
+        snprintf(st->id_str, sizeof(st->id_str), "%s", id->valuestring);
+        char *t = trim(st->id_str);
         char *end = NULL;
-        st.id_num = strtod(t, &end);
+        st->id_num = strtod(t, &end);
         if (*t == '\0' || end == NULL || *end != '\0')
         {
             cJSON_Delete(root);
-            st.id_str[0] = '\0';
-            return send_bad_request(req, &st, "id must be a number or numeric string");
+            st->id_str[0] = '\0';
+            return send_bad_request(req, st, "id must be a number or numeric string");
         }
-        memmove(st.id_str, t, strlen(t) + 1);
-        st.id_is_string = true;
+        memmove(st->id_str, t, strlen(t) + 1);
+        st->id_is_string = true;
     }
     else
     {
@@ -695,100 +701,124 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
         return send_bad_request(req, NULL, "missing id");
     }
 
-    char produto[PRESET_FIELD_LEN], cliente[PRESET_FIELD_LEN], estado[PRESET_FIELD_LEN];
-    char caminho[PRESET_BASE_LEN];
-    get_str_field(root, "produto", produto, sizeof(produto));
-    get_str_field(root, "cliente", cliente, sizeof(cliente));
-    get_str_field(root, "estado", estado, sizeof(estado));
-    get_str_field(root, "caminho", caminho, sizeof(caminho));
+    get_str_field(root, "produto", tmp->produto, sizeof(tmp->produto));
+    get_str_field(root, "cliente", job->cliente, sizeof(job->cliente));
+    get_str_field(root, "estado", job->estado, sizeof(job->estado));
+    get_str_field(root, "caminho", job->caminho, sizeof(job->caminho));
     cJSON_Delete(root);
-    hist_set_request(s_req_seq, &st, produto, cliente, estado);
+    hist_set_request(s_req_seq, st, tmp->produto, job->cliente, job->estado);
 
-    if (caminho[0] == '\0')
+    if (job->caminho[0] == '\0')
     {
-        return send_bad_request(req, &st, "missing caminho");
+        return send_bad_request(req, st, "missing caminho");
     }
-    if (strncasecmp(caminho, "http://", 7) != 0 && strncasecmp(caminho, "https://", 8) != 0)
+    if (strncasecmp(job->caminho, "http://", 7) != 0 && strncasecmp(job->caminho, "https://", 8) != 0)
     {
-        return send_bad_request(req, &st, "caminho must start with http:// or https://");
+        return send_bad_request(req, st, "caminho must start with http:// or https://");
     }
-    if (segment_unsafe(cliente) || segment_unsafe(estado))
+    if (segment_unsafe(job->cliente) || segment_unsafe(job->estado))
     {
-        return send_bad_request(req, &st, "cliente/estado contain invalid characters");
+        return send_bad_request(req, st, "cliente/estado contain invalid characters");
     }
-    size_t clen = strlen(caminho);
-    if (caminho[clen - 1] != '/')
+    size_t clen = strlen(job->caminho);
+    if (job->caminho[clen - 1] != '/')
     {
-        if (clen + 1 >= sizeof(caminho))
+        if (clen + 1 >= sizeof(job->caminho))
         {
-            return send_bad_request(req, &st, "caminho too long");
+            return send_bad_request(req, st, "caminho too long");
         }
-        caminho[clen] = '/';
-        caminho[clen + 1] = '\0';
+        job->caminho[clen] = '/';
+        job->caminho[clen + 1] = '\0';
     }
 
     /* --- Busy check + accept (atomic): the run is "running" until the preset is handled --- */
-    st.status = ST_RUNNING;
-    run_state_t cur;
-    switch (state_try_begin(&st, &cur))
+    st->status = ST_RUNNING;
+    switch (state_try_begin(st, &tmp->other))
     {
     case BEGIN_OK:
         break;
     case BEGIN_ADMIN_BUSY:
-    {
         /* Not a run conflict: reply with the request id and status 3 (the stored state is untouched) */
-        run_state_t blocked = st;
-        blocked.status = ST_ERROR;
-        blocked.msg_count = 0;
-        add_msg(&blocked, "firmware update in progress, try again later");
+        tmp->other = *st;
+        tmp->other.status = ST_ERROR;
+        tmp->other.msg_count = 0;
+        add_msg(&tmp->other, "firmware update in progress, try again later");
         ESP_LOGW(TAG, "POST /iniciar rejected (409): firmware update / restart in progress");
         hist_end(s_req_seq, 409, PRESET_LVL_NA, 0, false, 0);
-        return send_status(req, "409 Conflict", &blocked);
-    }
-    default:
+        return send_status(req, "409 Conflict", &tmp->other);
+    default: /* BEGIN_RUN_ACTIVE: tmp->other holds the run in progress */
         ESP_LOGW(TAG, "POST /iniciar rejected (409): a run is already in progress");
         hist_end(s_req_seq, 409, PRESET_LVL_NA, 0, false, 0);
-        return send_status(req, "409 Conflict", &cur);
+        return send_status(req, "409 Conflict", &tmp->other);
     }
 
-    ESP_LOGI(TAG, "POST /iniciar id=%.0f produto='%s' cliente='%s' estado='%s' caminho='%s'",
-             st.id_num, produto, cliente, estado, caminho);
+    char idtxt[24];
+    format_id(st, idtxt, sizeof(idtxt)); /* text, so the log call itself never formats a double */
+    ESP_LOGI(TAG, "POST /iniciar id=%s produto='%s' cliente='%s' estado='%s' caminho='%s'",
+             idtxt, tmp->produto, job->cliente, job->estado, job->caminho);
 
     /* --- Hand the request to the worker so the HTTP task stays free (/status, 409) --- */
-    job_t *job = calloc(1, sizeof(*job));
     httpd_req_t *async_req = NULL;
-    if (job != NULL && httpd_req_async_handler_begin(req, &async_req) == ESP_OK)
+    if (httpd_req_async_handler_begin(req, &async_req) == ESP_OK)
     {
         job->req = async_req;
-        job->st = st;
         job->seq = s_req_seq;
         job->t0_us = http_log_request_start_us();
-        snprintf(job->cliente, sizeof(job->cliente), "%s", cliente);
-        snprintf(job->estado, sizeof(job->estado), "%s", estado);
-        snprintf(job->caminho, sizeof(job->caminho), "%s", caminho);
+        job->stack_hw = http_log_stack_free_min();
         if (xQueueSend(s_job_queue, &job, 0) == pdTRUE)
         {
             http_log_async_detach(); /* the worker logs this request when it replies */
-            return ESP_OK;           /* worker replies and completes the request */
+            *handed_off = true;
+            return ESP_OK; /* worker replies and completes the request */
         }
         httpd_req_async_handler_complete(async_req);
     }
 
-    free(job);
-    st.status = ST_ERROR;
-    add_msg(&st, "could not schedule the run");
-    state_commit(&st);
-    ESP_LOGE(TAG, "could not schedule run %.0f", st.id_num);
+    st->status = ST_ERROR;
+    add_msg(st, "could not schedule the run");
+    state_commit(st);
+    ESP_LOGE(TAG, "could not schedule run %s", idtxt);
     hist_end(s_req_seq, 500, PRESET_LVL_NA, 0, false, 0);
-    return send_status(req, "500 Internal Server Error", &st);
+    return send_status(req, "500 Internal Server Error", st);
 }
 
+static esp_err_t iniciar_post_handler(httpd_req_t *req)
+{
+    s_req_seq = hist_begin();
+    if (!auth_ok(req))
+    {
+        hist_end(s_req_seq, 401, PRESET_LVL_NA, 0, false, 0);
+        return send_unauthorized(req);
+    }
+
+    job_t *job = calloc(1, sizeof(*job));
+    iniciar_tmp_t *tmp = malloc(sizeof(*tmp));
+    if (job == NULL || tmp == NULL)
+    {
+        free(job);
+        free(tmp);
+        ESP_LOGE(TAG, "out of memory for POST /iniciar");
+        hist_end(s_req_seq, 500, PRESET_LVL_NA, 0, false, 0);
+        http_log_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"id\":0,\"status\":3,\"message\":[\"out of memory\"]}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    bool handed_off = false;
+    esp_err_t err = iniciar_process(req, job, tmp, &handed_off);
+    free(tmp);
+    if (!handed_off)
+    {
+        free(job);
+    }
+    return err;
+}
 /* Worker side: reply to the (async) request, release it and free the job. */
 static void job_finish(job_t *job, const char *http_status, const run_state_t *st)
 {
     hist_end(job->seq, atoi(http_status), job->level, job->bytes, job->has_crc, job->crc);
     send_status(job->req, http_status, st);
-    http_log_async_done(job->req, http_status, job->t0_us);
+    http_log_async_done(job->req, http_status, job->t0_us, job->stack_hw);
     httpd_req_async_handler_complete(job->req);
     free(job);
 }
@@ -1390,7 +1420,8 @@ void preset_server_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = PRESET_SERVER_PORT;
-    config.stack_size = 6144;
+    config.stack_size = 8192; /* was 6144; see the stack note at POST /iniciar. The request log
+                                 reports the lowest free stack seen, to keep an eye on it */
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.max_uri_handlers = 16; /* 7 here + 5 admin endpoints (admin_api.c) */

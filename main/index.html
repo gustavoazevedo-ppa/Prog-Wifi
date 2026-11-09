@@ -44,10 +44,6 @@
   .segwrap { display: inline-block; margin-right: .8em; }
   pre#viewer-dump { margin: 0; padding: .6em; background: #f6f6f6; overflow-x: auto; font-size: .85em; line-height: 1.35; }
   pre#viewer-dump.wrap { white-space: pre-wrap; word-break: break-all; }
-  input#expected-crc { padding: .3em .5em; font-family: Consolas, monospace; width: 9em; }
-  #crc-result { font-size: .88em; font-weight: 600; margin-left: .4em; }
-  #crc-result.match { color: #14631f; }
-  #crc-result.mismatch { color: #b00020; }
 
   /* Admin */
   #admin-msg { margin: .5em 0; font-size: .9em; color: #555; min-height: 1.2em; }
@@ -100,13 +96,9 @@
       </span>
       <button type="button" id="btn-copy">Copy hex</button>
       <button type="button" id="btn-download">Download .conf</button>
+      <span id="viewer-note" class="note" role="status" aria-live="polite"></span>
     </div>
     <pre id="viewer-dump" tabindex="0"></pre>
-    <div class="toolbar">
-      <label for="expected-crc" class="meta"><strong>Check against expected CRC32:</strong></label>
-      <input type="text" id="expected-crc" autocomplete="off" spellcheck="false" maxlength="12">
-      <span id="crc-result" role="status" aria-live="polite"></span>
-    </div>
   </div>
   <div class="toolbar"><button type="button" id="btn-viewer">Reload viewer</button></div>
 </div>
@@ -421,16 +413,6 @@
     }
   }
 
-  function checkExpectedCrc() {
-    var input = document.getElementById("expected-crc");
-    var out = document.getElementById("crc-result");
-    var v = input.value.replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
-    if (v === "" || !viewerData || !viewerData.available) { out.textContent = ""; out.className = ""; return; }
-    var ok = (("00000000" + v).slice(-8) === viewerData.crc32);
-    out.textContent = ok ? "Match" : "Mismatch";
-    out.className = ok ? "match" : "mismatch";
-  }
-
   function renderViewer() {
     var panel = document.getElementById("viewer");
     var detail = document.getElementById("viewer-detail");
@@ -468,7 +450,6 @@
 
     drawDump();
     updateViewerWarn();
-    checkExpectedCrc();
   }
 
   function loadViewer() {
@@ -509,10 +490,9 @@
     });
   }
 
+  // Short feedback next to the viewer buttons (e.g. after Copy hex)
   function viewerNote(text) {
-    var warn = document.getElementById("crc-result");
-    warn.className = "";
-    warn.textContent = text;
+    document.getElementById("viewer-note").textContent = text;
   }
 
   // ---- Admin actions ----
@@ -627,7 +607,6 @@
 
   document.getElementById("mode-dump").addEventListener("click", function () { viewMode = "dump"; drawDump(); });
   document.getElementById("mode-string").addEventListener("click", function () { viewMode = "string"; drawDump(); });
-  document.getElementById("expected-crc").addEventListener("input", checkExpectedCrc);
 
   document.getElementById("btn-copy").addEventListener("click", function () {
     if (!viewerData || !viewerData.available) { return; }
