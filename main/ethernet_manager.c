@@ -112,6 +112,7 @@ void ethernet_init(void)
     esp_eth_phy_t *phy = esp_eth_phy_new_enc28j60(&phy_config);
 
     esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(mac, phy);
+    eth_config.check_link_period_ms = 200; /* default is 2000: faster link-up detection at boot */
     esp_eth_handle_t eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&eth_config, &eth_handle));
     s_eth_handle = eth_handle;
