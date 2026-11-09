@@ -66,6 +66,8 @@
 
     rows.push(["Uptime", typeof i.uptime_s === "number" ? fmtUptime(i.uptime_s) : "-"]);
 
+    rows.push(["CPU usage", typeof i.cpu_percent === "number" ? i.cpu_percent.toFixed(1) + "%" : "measuring..."]);
+
     var pu = i.partition_usage;
     if (pu && typeof pu.used_kb === "number") {
       rows.push(["Partition usage", pu.used_kb + " / " + pu.total_kb + " KB (" + pu.percent.toFixed(1) + "%)"]);

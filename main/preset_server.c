@@ -28,6 +28,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "freertos/idf_additions.h"
 #include "device_info.h"
 #include "ethernet_manager.h"
 #include "wifi_manager.h"
@@ -718,6 +719,44 @@ static esp_err_t index_get_handler(httpd_req_t *req)
     return serve_asset(req, "text/html", index_html_start, index_html_end, "no-cache");
 }
 
+/* ─── CPU usage sampler ───────────────────────────────────────────────────
+ * Every CPU_SAMPLE_MS an esp_timer callback compares the idle tasks' run time
+ * counters (esp_timer clock, microseconds) with the elapsed wall time:
+ *   usage = 1 - idle_time / (elapsed * number_of_cores)
+ * /info reports the result of the last window (all cores combined). */
+#define CPU_SAMPLE_MS 2000
+
+static esp_timer_handle_t s_cpu_timer;
+static volatile int s_cpu_permille = -1; /* tenths of a percent, -1 until the first window is done */
+
+static void cpu_sample_cb(void *arg)
+{
+    static uint32_t prev_idle[configNUMBER_OF_CORES];
+    static int64_t prev_wall = 0;
+    static bool primed = false;
+
+    int64_t now = esp_timer_get_time();
+    uint64_t idle_delta = 0;
+    for (int core = 0; core < configNUMBER_OF_CORES; core++)
+    {
+        uint32_t cur = (uint32_t)ulTaskGetIdleRunTimeCounterForCore(core);
+        idle_delta += (uint32_t)(cur - prev_idle[core]); /* modular: survives counter wrap */
+        prev_idle[core] = cur;
+    }
+    if (primed && now > prev_wall)
+    {
+        uint64_t capacity = (uint64_t)(now - prev_wall) * configNUMBER_OF_CORES;
+        int idle_pm = (int)((idle_delta * 1000ULL) / capacity);
+        if (idle_pm > 1000)
+        {
+            idle_pm = 1000;
+        }
+        s_cpu_permille = 1000 - idle_pm;
+    }
+    prev_wall = now;
+    primed = true;
+}
+
 /* ─── GET /info : unauthenticated device info (JSON) ─────────────────────── */
 static const char *reset_reason_str(esp_reset_reason_t r)
 {
@@ -822,6 +861,16 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     json_add_iface(root, "ethernet", ethernet_get_netif());
 
     cJSON_AddNumberToObject(root, "uptime_s", (double)(esp_timer_get_time() / 1000000LL));
+
+    int cpu_pm = s_cpu_permille;
+    if (cpu_pm >= 0)
+    {
+        cJSON_AddNumberToObject(root, "cpu_percent", cpu_pm / 10.0);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "cpu_percent"); /* first sample window not finished yet */
+    }
 
     /* App partition usage: used image length vs. partition size */
     if (part != NULL)
@@ -982,6 +1031,19 @@ void preset_server_start(void)
     {
         ESP_LOGE(TAG, "init failed (mutex/queue/timer/worker)");
         return;
+    }
+
+    const esp_timer_create_args_t cpu_args = {
+        .callback = cpu_sample_cb,
+        .name = "cpu_sample",
+    };
+    if (esp_timer_create(&cpu_args, &s_cpu_timer) == ESP_OK)
+    {
+        esp_timer_start_periodic(s_cpu_timer, (uint64_t)CPU_SAMPLE_MS * 1000ULL);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "CPU usage sampler not started");
     }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();

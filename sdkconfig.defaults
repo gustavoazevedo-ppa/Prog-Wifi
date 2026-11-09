@@ -53,3 +53,5 @@ CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
 # Browsers send large headers (cookies, user-agent, authorization). With the
 # default 512 the server answers "431 Request Header Fields Too Large".
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
+# CPU usage on the info page: idle-task run time counters (esp_timer clock source by default)
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
