@@ -132,22 +132,41 @@ static bool guard_post(httpd_req_t *req)
     return true;
 }
 
-/* Common pre-conditions for every state-changing operation. Returns false after replying. */
+/* Common pre-conditions for every state-changing operation. Returns false after replying.
+ * Order matters: take the admin slot first, then look at the test run. POST /iniciar does
+ * the opposite check inside its own critical section (state_try_begin), so one of the two
+ * always sees the other and a test run and an update can never start together. */
 static bool claim(httpd_req_t *req, admin_op_t op)
 {
-    if (preset_server_run_active())
-    {
-        ESP_LOGW(TAG, "POST %s rejected (409): test run in progress", req->uri);
-        reply(req, "409 Conflict", false, "Test run in progress");
-        return false;
-    }
     if (!begin_op(op))
     {
         ESP_LOGW(TAG, "POST %s rejected (409): another admin operation is running", req->uri);
         reply(req, "409 Conflict", false, "Another admin operation is in progress");
         return false;
     }
+    if (preset_server_run_active())
+    {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        s_st.op = OP_IDLE; /* give the slot back, nothing was done */
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "POST %s rejected (409): test run in progress", req->uri);
+        reply(req, "409 Conflict", false, "Test run in progress");
+        return false;
+    }
     return true;
+}
+
+bool admin_api_blocks_runs(void)
+{
+    bool blocks;
+    if (s_lock == NULL)
+    {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    blocks = (s_st.op == OP_UPDATING || s_st.op == OP_FORMATTING || s_st.op == OP_REBOOTING);
+    xSemaphoreGive(s_lock);
+    return blocks;
 }
 
 static const char *manifest_url_from_query(httpd_req_t *req)

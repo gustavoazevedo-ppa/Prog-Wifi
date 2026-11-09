@@ -1,6 +1,7 @@
 #ifndef ADMIN_API_H
 #define ADMIN_API_H
 
+#include <stdbool.h>
 #include "esp_http_server.h"
 
 /**
@@ -23,5 +24,12 @@
  * Call once, after the httpd server has been started.
  */
 void admin_api_register(httpd_handle_t server);
+
+/**
+ * True while a firmware update download, an NVS format or a reboot is in progress.
+ * POST /iniciar is refused (409) meanwhile. An update *check* does not block runs.
+ * Takes the admin lock briefly; never call it while holding that lock.
+ */
+bool admin_api_blocks_runs(void);
 
 #endif // ADMIN_API_H

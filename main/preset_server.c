@@ -102,22 +102,35 @@ static void state_commit(const run_state_t *in)
 }
 
 /* Atomically start a run: fails (and returns the current state in *cur) if one is active. */
-static bool state_try_begin(const run_state_t *in, run_state_t *cur)
+typedef enum
 {
-    bool ok;
+    BEGIN_OK,
+    BEGIN_RUN_ACTIVE, /* a run is already in progress (*cur = that run) */
+    BEGIN_ADMIN_BUSY, /* firmware update / format / reboot in progress (state untouched) */
+} begin_result_t;
+
+/* Lock order: s_lock (here) -> admin lock (inside admin_api_blocks_runs()).
+ * admin_api.c never takes s_lock while holding its own lock, so this cannot deadlock. */
+static begin_result_t state_try_begin(const run_state_t *in, run_state_t *cur)
+{
+    begin_result_t res;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_state.status == ST_RUNNING)
     {
         *cur = s_state;
-        ok = false;
+        res = BEGIN_RUN_ACTIVE;
+    }
+    else if (admin_api_blocks_runs())
+    {
+        res = BEGIN_ADMIN_BUSY;
     }
     else
     {
         s_state = *in;
-        ok = true;
+        res = BEGIN_OK;
     }
     xSemaphoreGive(s_lock);
-    return ok;
+    return res;
 }
 
 /* Work item handed from the HTTP task to the worker task */
@@ -511,8 +524,21 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
     /* --- Busy check + accept (atomic): the run is "running" until the preset is handled --- */
     st.status = ST_RUNNING;
     run_state_t cur;
-    if (!state_try_begin(&st, &cur))
+    switch (state_try_begin(&st, &cur))
     {
+    case BEGIN_OK:
+        break;
+    case BEGIN_ADMIN_BUSY:
+    {
+        /* Not a run conflict: reply with the request id and status 3 (the stored state is untouched) */
+        run_state_t blocked = st;
+        blocked.status = ST_ERROR;
+        blocked.msg_count = 0;
+        add_msg(&blocked, "firmware update in progress, try again later");
+        ESP_LOGW(TAG, "POST /iniciar rejected (409): firmware update / restart in progress");
+        return send_status(req, "409 Conflict", &blocked);
+    }
+    default:
         ESP_LOGW(TAG, "POST /iniciar rejected (409): a run is already in progress");
         return send_status(req, "409 Conflict", &cur);
     }

@@ -129,6 +129,7 @@ If none exist, the start fails (see error handling, still to be defined).
 | Missing or wrong `X-API-Key` | 401 | Empty |
 | Invalid JSON or missing `id` / `caminho` | 400 | Status object, `status: 3` |
 | Run already in progress | 409 | Status object of the current run (state untouched) |
+| Firmware update download, NVS format or reboot in progress (see "Admin endpoints") | 409 | Status object with the request `id`, `status: 3` and `message: ["firmware update in progress, try again later"]` (stored state untouched) |
 | No `exemplo.conf` found in any location | 404 | Status object, `status: 3` |
 | Invalid hex content, or any other failure | 500 | Status object, `status: 3` |
 
@@ -213,6 +214,68 @@ Code: `main/preset_server.c` / `preset_server.h`, started from `app_main()`.
   - On connect it sends the most recent lines (4 KB ring buffer) and then streams new ones. Lines longer than 319 characters are truncated, and a "bytes dropped" marker appears if the client falls behind. Logs also still go to the UART.
   - The basic auth credentials travel in clear text over HTTP and there is no attempt limit, which is acceptable only on the controlled network.
 - Console log lines are prefixed with `PRESET`.
+
+## Admin endpoints (field maintenance)
+
+Code: `main/admin_api.c` / `admin_api.h`, registered by `preset_server_start()` on the same HTTP server (port 80, Wi-Fi and Ethernet). The update logic is in `main/ota_button.c` (shared with the 10 s button flow). The web page (`GET /`) has a button for each action.
+
+**Authentication:** HTTP basic auth with the same credentials as `/console` (`CONSOLE_AUTH_USER` / `CONSOLE_AUTH_PASS`). The `X-API-Key` is not used. Credentials travel in clear text, acceptable only on the controlled network.
+
+**Extra header on every `POST`:** `X-Admin: 1` (any value). Browsers cache basic credentials, and a custom header cannot be added by a cross-site request without a CORS preflight, which the device never answers. Without it the reply is `403`. In Postman add it as a header.
+
+| Endpoint | What it does |
+|---|---|
+| `GET /admin/status` | State of the current or last operation (JSON, see below) |
+| `POST /admin/update/check` | Download the manifest and compare versions. Nothing is installed. `?channel=beta` uses the beta manifest |
+| `POST /admin/update/apply` | Check, then download, decrypt and write the new image. Does **not** reboot: the image runs after the next reboot. `?channel=beta` as above |
+| `POST /admin/format?confirm=yes` | Erase the NVS partition (saved settings, e.g. static IP), then reboot. Without `confirm=yes` the reply is `400`. After this a static IP is gone and the device returns on DHCP |
+| `POST /admin/reboot` | Reboot |
+| `POST /console` | Open the log console port (unchanged, see above). Does not need `X-Admin` |
+
+**Replies to the `POST`s** are JSON: `{"ok":true|false,"message":"..."}`.
+
+| Code | Meaning |
+|---|---|
+| 202 | `check` or `apply` started. Poll `GET /admin/status` |
+| 200 | `format` or `reboot` accepted. The action happens about 0.8 s later, after the reply is sent |
+| 400 | `format` without `?confirm=yes` |
+| 401 | Missing or wrong basic auth (with `WWW-Authenticate`) |
+| 403 | Missing `X-Admin` header |
+| 409 | A test run is in progress, or another admin operation is running |
+| 500 | Not enough memory to start the operation |
+
+**`GET /admin/status`** example:
+
+```json
+{"op":"idle","progress":0,"running":"1.0.0","remote":"1.0.1","update_available":true,
+ "staged":false,"staged_version":"","test_running":false,
+ "last":{"op":"check","ok":true,"message":"Update available: 1.0.1"}}
+```
+
+| Field | Description |
+|---|---|
+| `op` | `idle`, `checking`, `updating`, `formatting` or `rebooting` |
+| `progress` | 0 to 100 while `op` is `updating` |
+| `running` | Version of the running firmware |
+| `remote` | Version seen in the last manifest (empty if none yet) |
+| `update_available` | The last check found a newer version |
+| `staged` / `staged_version` | A new image is already written and runs after a reboot |
+| `test_running` | A test run (`/iniciar`) is in progress |
+| `last` | Outcome of the last finished operation: `op` (`check`, `update`, `format`), `ok`, `message` |
+
+**Rules between tests and maintenance**
+
+- `check`, `apply`, `format` and `reboot` are refused (`409`) while a test run is in progress.
+- `POST /iniciar` is refused (`409`, see the error table) while an update **download** (`apply`), a `format` or a `reboot` is in progress. A plain `check` does not block runs.
+- The two checks are made so that a test run and an update can never start at the same time.
+
+**Implementation notes**
+
+- `check` and `apply` run in a temporary task (10 KB stack, TLS) and the HTTP task stays free.
+- Updates need access to `download.citrox.com.br` (manifest and image, HTTPS) from the field network, including DNS.
+- Only one admin operation runs at a time.
+- Rollback: the new firmware is marked valid only after the HTTP server has started (`main.c`), not right after boot. If a new image crashes earlier, or the server fails to start, the bootloader goes back to the previous image on the next reset. It is not tied to getting an IP, so a unit booted without a cable keeps a good update.
+- Not tested on hardware at the time of writing: the OTA download over Ethernet, and the rollback path with a deliberately bad image.
 
 ## Testing with Postman
 
