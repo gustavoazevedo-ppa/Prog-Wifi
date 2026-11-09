@@ -230,6 +230,8 @@ Code: `main/admin_api.c` / `admin_api.h`, registered by `preset_server_start()` 
 | `POST /admin/update/apply` | Check, then download, decrypt and write the new image. Does **not** reboot: the image runs after the next reboot. `?channel=beta` as above |
 | `POST /admin/format?confirm=yes` | Erase the NVS partition (saved settings, e.g. static IP), then reboot. Without `confirm=yes` the reply is `400`. After this a static IP is gone and the device returns on DHCP |
 | `POST /admin/reboot` | Reboot |
+| `GET /admin/history` | The last 20 `POST /iniciar` requests since boot, newest first, including rejected ones (JSON, see below) |
+| `GET /admin/preset` | The last preset that was downloaded and decoded successfully: metadata plus the hex (JSON). `?format=text` returns only the hex string |
 | `POST /console` | Open the log console port (unchanged, see above). Does not need `X-Admin` |
 
 **Replies to the `POST`s** are JSON: `{"ok":true|false,"message":"..."}`.
@@ -262,6 +264,41 @@ Code: `main/admin_api.c` / `admin_api.h`, registered by `preset_server_start()` 
 | `staged` / `staged_version` | A new image is already written and runs after a reboot |
 | `test_running` | A test run (`/iniciar`) is in progress |
 | `last` | Outcome of the last finished operation: `op` (`check`, `update`, `format`), `ok`, `message` |
+
+**`GET /admin/history`** (both history and preset are RAM only: empty after a reboot or a format)
+
+```json
+{"now_s":8077,"entries":[
+ {"seq":8,"uptime_s":8441,"id":"1235","product":"F02305200","cliente":"000417","estado":"MG",
+  "result":"error","code":404,"level":"none","bytes":null,"crc32":null,"duration_ms":12400},
+ {"seq":7,"uptime_s":7978,"id":"1234","product":"F02303100","cliente":"008249","estado":"SP",
+  "result":"ok","code":200,"level":"customer","bytes":312,"crc32":"A1B2C3D4","duration_ms":3100}]}
+```
+
+| Field | Description |
+|---|---|
+| `now_s` | Device uptime in seconds when the reply was built (the device has no real clock) |
+| `seq` | 1, 2, 3 ... since boot, one per request, also rejected ones |
+| `uptime_s` | Uptime when the request arrived |
+| `id`, `product`, `cliente`, `estado` | As received (ASCII only, truncated to 23 / 23 / 15 / 7 characters). `null` when missing or not parsed yet (e.g. a `401`) |
+| `result` | `running`, `ok` (200), `error` (accepted but failed: 404 or 500) or `rejected` (never started: 400, 401, 409) |
+| `code` | HTTP status sent, `null` while running |
+| `level` | Which lookup matched: `customer`, `state`, `default`, or `none` (every location returned 404). `null` if not applicable |
+| `bytes`, `crc32` | Size and CRC-32 (standard, as zlib / Python `binascii.crc32`, 8 hex digits) of the decoded preset. `null` if none |
+| `duration_ms` | Time until the reply was decided, `null` while running |
+
+**`GET /admin/preset`**
+
+```json
+{"available":true,"now_s":8077,"seq":7,"id":"1234",
+ "source":"https://preset.ppa.com.br/agility123/008249/exemplo.conf","level":"customer",
+ "bytes":312,"crc32":"A1B2C3D4","loaded_s":7978,"hex":"00112233AABB..."}
+```
+
+- `hex` is continuous uppercase hex, the same form as `exemplo.conf`, so it can be diffed against the server file.
+- Before the first successful download since boot: `{"available":false,"now_s":N}` (with `?format=text`: `404`).
+- A run whose hex fails to decode does **not** replace the stored preset: it keeps the last valid one. The `seq` field tells which run loaded it, so a newer failed request can be told apart from the content shown.
+- The web page shows history and preset as two independent sections, each with its own refresh button. A history row whose CRC equals the viewer's gets an "in viewer" tag. Neither is loaded automatically, so opening the page does not trigger the password prompt.
 
 **Rules between tests and maintenance**
 

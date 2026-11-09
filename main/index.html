@@ -5,17 +5,51 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Prog Wi-Fi</title>
 <style>
-  body { font-family: sans-serif; margin: 1.5em; color: #222; }
+  body { font-family: sans-serif; margin: 1.5em; color: #222; max-width: 1000px; }
   h1 { margin-bottom: .2em; }
   table { border-collapse: collapse; }
   th, td { text-align: left; padding: .3em .8em; border-bottom: 1px solid #ddd; }
   th { color: #555; font-weight: 600; }
-  #status { margin: .6em 0; font-size: .9em; color: #555; }
-  #status.error { color: #b00020; font-weight: 600; }
-  #btn-refresh { padding: .45em .9em; font-size: .95em; }
+  button { padding: .45em .9em; font-size: .95em; margin: 0 .4em .5em 0; }
+  button.danger { color: #b00020; }
   h2 { margin: 1.4em 0 .4em; font-size: 1.1em; }
-  #admin-buttons button { margin: 0 .4em .5em 0; padding: .45em .9em; font-size: .95em; }
-  #admin-buttons button.danger { color: #b00020; }
+  .note { color: #555; font-size: .85em; margin: .3em 0 .6em; }
+  .note.error { color: #b00020; font-weight: 600; }
+  .head { display: flex; align-items: baseline; gap: .8em; flex-wrap: wrap; }
+  .head h2 { margin-right: .2em; }
+  .head .note { margin: 0; }
+
+  /* Run history */
+  table.hist { width: 100%; }
+  table.hist th, table.hist td { padding: .3em .6em; font-size: .88em; background: none; }
+  table.hist th { background: #f6f6f6; }
+  .badge { display: inline-block; padding: 0 .5em; border-radius: .6em; font-size: .85em; font-weight: 600; white-space: nowrap; }
+  .badge.ok { background: #d9f2de; color: #14631f; }
+  .badge.error { background: #fbdcdc; color: #9b1c1c; }
+  .badge.rejected { background: #e6e6e6; color: #444; }
+  .badge.running { background: #fff1c9; color: #7a5600; }
+  .tag { display: inline-block; margin-left: .4em; padding: 0 .4em; border: 1px solid #3b6fd4; color: #3b6fd4; border-radius: .3em; font-size: .75em; }
+  .mono { font-family: Consolas, monospace; }
+  .muted { color: #888; }
+
+  /* Preset viewer */
+  .panel { border: 1px solid #ccc; border-radius: 4px; padding: .8em 1em; margin-top: .4em; }
+  .panel.empty { color: #666; background: #fafafa; }
+  .meta { font-size: .88em; margin-bottom: .5em; }
+  .meta span.item { margin-right: 1.4em; white-space: nowrap; }
+  .warn { background: #fff1c9; color: #7a5600; padding: .3em .6em; border-radius: 3px; font-size: .85em; margin-bottom: .6em; }
+  .toolbar { margin: .4em 0; }
+  button.seg { margin: 0; border-radius: 0; }
+  button.seg[aria-pressed="true"] { background: #333; color: #fff; }
+  .segwrap { display: inline-block; margin-right: .8em; }
+  pre#viewer-dump { margin: 0; padding: .6em; background: #f6f6f6; overflow-x: auto; font-size: .85em; line-height: 1.35; }
+  pre#viewer-dump.wrap { white-space: pre-wrap; word-break: break-all; }
+  input#expected-crc { padding: .3em .5em; font-family: Consolas, monospace; width: 9em; }
+  #crc-result { font-size: .88em; font-weight: 600; margin-left: .4em; }
+  #crc-result.match { color: #14631f; }
+  #crc-result.mismatch { color: #b00020; }
+
+  /* Admin */
   #admin-msg { margin: .5em 0; font-size: .9em; color: #555; min-height: 1.2em; }
   #admin-msg.error { color: #b00020; font-weight: 600; }
   progress { width: 16em; }
@@ -23,12 +57,61 @@
 </head>
 <body>
 <h1>Prog Wi-Fi</h1>
-<button type="button" id="btn-refresh">Refresh</button>
-<div id="status" role="status" aria-live="polite">Loading...</div>
+
+<!-- 1. Info -->
+<div class="head">
+  <h2>Info</h2>
+  <button type="button" id="btn-refresh">Refresh info</button>
+  <span id="status" class="note" role="status" aria-live="polite">Loading...</span>
+</div>
 <table>
   <tbody id="rows"></tbody>
 </table>
 
+<!-- 2. Run history (needs the admin password) -->
+<div class="head">
+  <h2>Run history</h2>
+  <button type="button" id="btn-hist">Refresh history</button>
+  <span id="hist-status" class="note" role="status" aria-live="polite">Not loaded. The button asks for the admin user and password.</span>
+</div>
+<div class="note">Last 20 requests since boot, newest first. Uptime, not wall time. A CRC32 tagged "in viewer" matches the preset currently loaded in the viewer below.</div>
+<table class="hist" id="hist-table" hidden>
+  <thead>
+    <tr>
+      <th>#</th><th>Uptime</th><th>Run id</th><th>Product</th><th>Customer / State</th>
+      <th>Result</th><th>Preset used</th><th>Bytes</th><th>CRC32</th><th>Time</th>
+    </tr>
+  </thead>
+  <tbody id="hist-rows"></tbody>
+</table>
+
+<!-- 3. Preset viewer (needs the admin password) -->
+<h2>Preset viewer</h2>
+<div class="note">Shows the most recent successfully downloaded preset (RAM only, lost on reboot). Independent of the history above.</div>
+<div class="panel empty" id="viewer">
+  <div id="viewer-msg" role="status" aria-live="polite">Not loaded. "Reload viewer" asks for the admin user and password.</div>
+  <div id="viewer-detail" hidden>
+    <div class="warn" id="viewer-warn" hidden></div>
+    <div class="meta" id="viewer-meta1"></div>
+    <div class="meta" id="viewer-meta2"></div>
+    <div class="toolbar">
+      <span class="segwrap" role="group" aria-label="View mode">
+        <button type="button" class="seg" id="mode-dump" aria-pressed="true">Hexdump</button><button type="button" class="seg" id="mode-string" aria-pressed="false">Hex string</button>
+      </span>
+      <button type="button" id="btn-copy">Copy hex</button>
+      <button type="button" id="btn-download">Download .conf</button>
+    </div>
+    <pre id="viewer-dump" tabindex="0"></pre>
+    <div class="toolbar">
+      <label for="expected-crc" class="meta"><strong>Check against expected CRC32:</strong></label>
+      <input type="text" id="expected-crc" autocomplete="off" spellcheck="false" maxlength="12">
+      <span id="crc-result" role="status" aria-live="polite"></span>
+    </div>
+  </div>
+  <div class="toolbar"><button type="button" id="btn-viewer">Reload viewer</button></div>
+</div>
+
+<!-- 4. Admin -->
 <h2>Admin</h2>
 <div id="admin-msg" role="status" aria-live="polite">Actions ask for the admin user and password.</div>
 <progress id="admin-progress" max="100" value="0" hidden aria-label="Update progress"></progress>
@@ -47,14 +130,36 @@
   // Value shown when a field is missing or null.
   function or(v, fallback) { return (v === null || v === undefined || v === "") ? fallback : v; }
 
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
   function fmtUptime(s) {
     var d = Math.floor(s / 86400);
     var h = Math.floor(s / 3600) % 24;
     var m = Math.floor(s / 60) % 60;
     var sec = s % 60;
-    function p(n) { return (n < 10 ? "0" : "") + n; }
-    return d + "d " + p(h) + ":" + p(m) + ":" + p(sec);
+    return d + "d " + pad2(h) + ":" + pad2(m) + ":" + pad2(sec);
   }
+
+  // hh:mm:ss (hours can exceed 24)
+  function fmtHMS(s) {
+    return pad2(Math.floor(s / 3600)) + ":" + pad2(Math.floor(s / 60) % 60) + ":" + pad2(s % 60);
+  }
+
+  function fmtAgo(s) {
+    if (s < 0) { s = 0; }
+    if (s < 60) { return s + " s ago"; }
+    if (s < 3600) { return Math.floor(s / 60) + " min ago"; }
+    return Math.floor(s / 3600) + " h " + (Math.floor(s / 60) % 60) + " min ago";
+  }
+
+  // Small DOM helpers. Text always goes through textContent: never interpreted as HTML.
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) { e.className = cls; }
+    if (text !== undefined) { e.textContent = text; }
+    return e;
+  }
+  function clear(node) { while (node.firstChild) { node.removeChild(node.firstChild); } }
 
   function ifaceRows(label, n) {
     if (!n) { return [[label, "not available"]]; }
@@ -114,23 +219,19 @@
 
   function render(rows) {
     var tbody = document.getElementById("rows");
-    while (tbody.firstChild) { tbody.removeChild(tbody.firstChild); }
+    clear(tbody);
     rows.forEach(function (r) {
       var tr = document.createElement("tr");
-      var th = document.createElement("th");
-      var td = document.createElement("td");
-      th.textContent = r[0];   // textContent: never interpreted as HTML
-      td.textContent = String(r[1]);
-      tr.appendChild(th);
-      tr.appendChild(td);
+      tr.appendChild(el("th", null, r[0]));
+      tr.appendChild(el("td", null, String(r[1])));
       tbody.appendChild(tr);
     });
   }
 
   function setStatus(text, isError) {
-    var el = document.getElementById("status");
-    el.textContent = text;
-    el.className = isError ? "error" : "";
+    var s = document.getElementById("status");
+    s.textContent = text;
+    s.className = isError ? "note error" : "note";
   }
 
   function refresh() {
@@ -141,21 +242,287 @@
       })
       .then(function (info) {
         render(buildRows(info));
-        setStatus("Loaded " + new Date().toLocaleTimeString(), false);
+        setStatus("Info loaded " + new Date().toLocaleTimeString(), false);
       })
       .catch(function (err) {
         setStatus("Could not load device info: " + err.message, true);
       });
   }
 
-  // ---- Admin actions (HTTP Basic auth: the browser asks for the credentials) ----
+  // ---- Authenticated GET (HTTP Basic auth: the browser asks for the credentials) ----
+  function getAdminJson(path) {
+    return fetch(path, { cache: "no-store" }).then(function (res) {
+      if (res.status === 401) { throw new Error("Authentication required (wrong or missing credentials)"); }
+      if (!res.ok) { throw new Error("HTTP " + res.status); }
+      return res.json();
+    });
+  }
+
+  // ---- Run history ----
+  var histData = null;     // last /admin/history reply
+  var viewerData = null;   // last /admin/preset reply
+
+  function setHistStatus(text, isError) {
+    var s = document.getElementById("hist-status");
+    s.textContent = text;
+    s.className = isError ? "note error" : "note";
+  }
+
+  function levelText(l) {
+    if (l === "none") { return "none found"; }
+    return or(l, "-");
+  }
+
+  function resultBadge(e) {
+    var text;
+    if (e.result === "ok") { text = "OK"; }
+    else if (e.result === "error") { text = "Error " + or(e.code, ""); }
+    else if (e.result === "rejected") { text = "Rejected " + or(e.code, ""); }
+    else { text = "Running"; }
+    return el("span", "badge " + e.result, text.trim());
+  }
+
+  function renderHistory() {
+    var table = document.getElementById("hist-table");
+    var tbody = document.getElementById("hist-rows");
+    clear(tbody);
+    var entries = (histData && histData.entries) || [];
+    var viewerCrc = (viewerData && viewerData.available) ? viewerData.crc32 : null;
+
+    if (entries.length === 0) {
+      var tr0 = document.createElement("tr");
+      var td0 = el("td", "muted", "No requests since boot.");
+      td0.colSpan = 10;
+      tr0.appendChild(td0);
+      tbody.appendChild(tr0);
+    }
+
+    entries.forEach(function (e) {
+      var tr = document.createElement("tr");
+      function cell(text, cls) {
+        var td = el("td", cls, text);
+        tr.appendChild(td);
+        return td;
+      }
+      cell(String(e.seq));
+      cell(fmtHMS(e.uptime_s), "mono");
+      cell(or(e.id, "-"), e.id ? "" : "muted");
+      cell(or(e.product, "-"), e.product ? "mono" : "muted");
+      var cs = (e.cliente || e.estado) ? (or(e.cliente, "-") + " / " + or(e.estado, "-")) : "-";
+      cell(cs, (e.cliente || e.estado) ? "" : "muted");
+      var tdRes = el("td");
+      tdRes.appendChild(resultBadge(e));
+      tr.appendChild(tdRes);
+      cell(levelText(e.level), e.level ? "" : "muted");
+      cell(or(e.bytes, "-"), e.bytes ? "" : "muted");
+      var tdCrc = cell(or(e.crc32, "-"), e.crc32 ? "mono" : "muted");
+      if (e.crc32 && viewerCrc && e.crc32 === viewerCrc) {
+        tdCrc.appendChild(el("span", "tag", "in viewer"));
+      }
+      cell(e.duration_ms === null || e.duration_ms === undefined ? "-" : (e.duration_ms / 1000).toFixed(1) + " s",
+           e.duration_ms === null || e.duration_ms === undefined ? "muted" : "");
+      tbody.appendChild(tr);
+    });
+    table.hidden = false;
+  }
+
+  function loadHistory() {
+    setHistStatus("Loading history...", false);
+    getAdminJson("/admin/history")
+      .then(function (d) {
+        histData = d;
+        renderHistory();
+        setHistStatus("History loaded " + new Date().toLocaleTimeString() +
+                      " (" + ((d.entries || []).length) + " requests)", false);
+        updateViewerWarn();
+      })
+      .catch(function (err) {
+        setHistStatus("Could not load history: " + err.message, true);
+      });
+  }
+
+  // ---- Preset viewer ----
+  var viewMode = "dump";
+  var viewerBytes = [];    // decoded from viewerData.hex
+
+  function hexToBytes(hex) {
+    var out = [];
+    for (var i = 0; i + 1 < hex.length; i += 2) { out.push(parseInt(hex.substr(i, 2), 16)); }
+    return out;
+  }
+
+  // Standard CRC-32 (same as the device), used to double-check the device's value.
+  function crc32(bytes) {
+    var crc = 0xFFFFFFFF;
+    for (var i = 0; i < bytes.length; i++) {
+      crc ^= bytes[i];
+      for (var b = 0; b < 8; b++) { crc = (crc >>> 1) ^ (0xEDB88320 & -(crc & 1)); }
+    }
+    var v = ((~crc) >>> 0).toString(16).toUpperCase();
+    return ("00000000" + v).slice(-8);
+  }
+
+  function hex2(n) { return (n < 16 ? "0" : "") + n.toString(16).toUpperCase(); }
+
+  function buildDump(bytes) {
+    var lines = [];
+    for (var off = 0; off < bytes.length; off += 16) {
+      var left = "", right = "", ascii = "";
+      for (var k = 0; k < 16; k++) {
+        var cellText = (off + k < bytes.length) ? hex2(bytes[off + k]) : "  ";
+        if (k < 8) { left += cellText + " "; } else { right += cellText + " "; }
+        if (off + k < bytes.length) {
+          var c = bytes[off + k];
+          ascii += (c >= 0x20 && c <= 0x7E) ? String.fromCharCode(c) : ".";
+        }
+      }
+      var o = ("0000" + off.toString(16).toUpperCase()).slice(-4);
+      lines.push(o + "  " + left + " " + right + " " + ascii);
+    }
+    return lines.join("\n");
+  }
+
+  function metaItem(parent, label, value, mono) {
+    var s = el("span", "item");
+    s.appendChild(el("strong", null, label + " "));
+    s.appendChild(el("span", mono ? "mono" : null, value));
+    parent.appendChild(s);
+  }
+
+  function drawDump() {
+    var pre = document.getElementById("viewer-dump");
+    if (!viewerData || !viewerData.available) { pre.textContent = ""; return; }
+    if (viewMode === "dump") {
+      pre.className = "";
+      pre.textContent = buildDump(viewerBytes);
+    } else {
+      pre.className = "wrap";
+      pre.textContent = viewerData.hex;
+    }
+    document.getElementById("mode-dump").setAttribute("aria-pressed", viewMode === "dump" ? "true" : "false");
+    document.getElementById("mode-string").setAttribute("aria-pressed", viewMode === "string" ? "true" : "false");
+  }
+
+  // Warn when a newer request failed after the preset in the viewer was loaded.
+  function updateViewerWarn() {
+    var warn = document.getElementById("viewer-warn");
+    warn.hidden = true;
+    if (!viewerData || !viewerData.available || !histData) { return; }
+    var entries = histData.entries || [];
+    for (var i = 0; i < entries.length; i++) {   // newest first
+      var e = entries[i];
+      if (e.seq > viewerData.seq && e.result === "error") {
+        warn.textContent = "Newer request #" + e.seq + " (run " + or(e.id, "-") +
+          ") failed after this preset was loaded. The content below is still from run " +
+          or(viewerData.id, "-") + ".";
+        warn.hidden = false;
+        return;
+      }
+    }
+  }
+
+  function checkExpectedCrc() {
+    var input = document.getElementById("expected-crc");
+    var out = document.getElementById("crc-result");
+    var v = input.value.replace(/\s+/g, "").replace(/^0x/i, "").toUpperCase();
+    if (v === "" || !viewerData || !viewerData.available) { out.textContent = ""; out.className = ""; return; }
+    var ok = (("00000000" + v).slice(-8) === viewerData.crc32);
+    out.textContent = ok ? "Match" : "Mismatch";
+    out.className = ok ? "match" : "mismatch";
+  }
+
+  function renderViewer() {
+    var panel = document.getElementById("viewer");
+    var detail = document.getElementById("viewer-detail");
+    var msg = document.getElementById("viewer-msg");
+    var d = viewerData;
+
+    if (!d || !d.available) {
+      panel.className = "panel empty";
+      detail.hidden = true;
+      msg.hidden = false;
+      msg.textContent = "No preset downloaded since the last boot. It appears here after the first successful /iniciar.";
+      return;
+    }
+
+    panel.className = "panel";
+    msg.hidden = true;
+    detail.hidden = false;
+    viewerBytes = hexToBytes(d.hex);
+
+    var m1 = document.getElementById("viewer-meta1");
+    var m2 = document.getElementById("viewer-meta2");
+    clear(m1);
+    clear(m2);
+    metaItem(m1, "From run", or(d.id, "-") + " (#" + d.seq + ")", false);
+    metaItem(m1, "Loaded", "uptime " + fmtHMS(d.loaded_s) + " (" + fmtAgo(d.now_s - d.loaded_s) + ")", false);
+    metaItem(m1, "Size", d.bytes + " bytes", false);
+    metaItem(m1, "CRC32", d.crc32, true);
+    metaItem(m1, "Level", or(d.level, "-"), false);
+    metaItem(m2, "Source", d.source, true);
+
+    // Cross-check: the CRC computed here from the shown bytes must equal the device's value.
+    if (viewerBytes.length !== d.bytes || crc32(viewerBytes) !== d.crc32) {
+      metaItem(m2, "Warning", "the CRC computed in the browser differs from the one reported by the device", false);
+    }
+
+    drawDump();
+    updateViewerWarn();
+    checkExpectedCrc();
+  }
+
+  function loadViewer() {
+    var msg = document.getElementById("viewer-msg");
+    msg.hidden = false;
+    msg.textContent = "Loading preset...";
+    getAdminJson("/admin/preset")
+      .then(function (d) {
+        viewerData = d;
+        renderViewer();
+        if (histData) { renderHistory(); }   // refresh the "in viewer" tags
+      })
+      .catch(function (err) {
+        document.getElementById("viewer").className = "panel empty";
+        document.getElementById("viewer-detail").hidden = true;
+        msg.hidden = false;
+        msg.textContent = "Could not load the preset: " + err.message;
+      });
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    // Plain http:// is not a secure context: fall back to a hidden textarea.
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (ok) { resolve(); } else { reject(new Error("copy not allowed")); }
+    });
+  }
+
+  function viewerNote(text) {
+    var warn = document.getElementById("crc-result");
+    warn.className = "";
+    warn.textContent = text;
+  }
+
+  // ---- Admin actions ----
   var adminButtons = document.querySelectorAll("#admin-buttons button");
   var progressEl = document.getElementById("admin-progress");
 
   function adminMsg(text, isError) {
-    var el = document.getElementById("admin-msg");
-    el.textContent = text;
-    el.className = isError ? "error" : "";
+    var m = document.getElementById("admin-msg");
+    m.textContent = text;
+    m.className = isError ? "error" : "";
   }
 
   function setBusy(busy) {
@@ -217,7 +584,7 @@
     fetch("/info", { cache: "no-store" })
       .then(function (res) {
         if (!res.ok) { throw new Error("HTTP " + res.status); }
-        adminMsg("Device is back.", false);
+        adminMsg("Device is back. History and the preset viewer start empty after a reboot.", false);
         setBusy(false);
         refresh();
       })
@@ -255,6 +622,34 @@
   }
 
   document.getElementById("btn-refresh").addEventListener("click", refresh);
+  document.getElementById("btn-hist").addEventListener("click", loadHistory);
+  document.getElementById("btn-viewer").addEventListener("click", loadViewer);
+
+  document.getElementById("mode-dump").addEventListener("click", function () { viewMode = "dump"; drawDump(); });
+  document.getElementById("mode-string").addEventListener("click", function () { viewMode = "string"; drawDump(); });
+  document.getElementById("expected-crc").addEventListener("input", checkExpectedCrc);
+
+  document.getElementById("btn-copy").addEventListener("click", function () {
+    if (!viewerData || !viewerData.available) { return; }
+    copyText(viewerData.hex).then(function () {
+      viewerNote("Copied " + viewerData.hex.length + " characters");
+    }).catch(function (err) {
+      viewerNote("Could not copy: " + err.message + ". Switch to \"Hex string\" and select the text.");
+    });
+  });
+
+  document.getElementById("btn-download").addEventListener("click", function () {
+    if (!viewerData || !viewerData.available) { return; }
+    var blob = new Blob([viewerData.hex + "\n"], { type: "text/plain" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "exemplo.conf";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  });
 
   document.getElementById("btn-console").addEventListener("click", function () {
     setBusy(true);

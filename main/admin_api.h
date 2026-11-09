@@ -12,6 +12,9 @@
  *   POST /admin/update/apply        download + flash it, no reboot (?channel=beta)
  *   POST /admin/format?confirm=yes  erase NVS, then reboot
  *   POST /admin/reboot              reboot
+ *   GET  /admin/history             last 20 POST /iniciar requests, newest first (JSON)
+ *   GET  /admin/preset              last successfully decoded preset: metadata + hex (JSON);
+ *                                   ?format=text returns only the hex string
  *
  * Every POST also needs the header "X-Admin: 1". A browser will not add a custom
  * header on a cross-site request without a CORS preflight, which the device never

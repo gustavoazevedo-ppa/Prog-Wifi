@@ -49,7 +49,6 @@
 #define PRESET_SIM_ACTION_TEXT "UART: send preset to DUT and start tests (simulated)"
 #define PRESET_UART_BAUD 9600                      /* used to emulate TX time */
 #define PRESET_MAX_HEX_CHARS 6144                  /* 2 KB binary = 4096 hex chars, plus slack */
-#define PRESET_BIN_MAX 2048                        /* max decoded preset size (bytes) */
 #define PRESET_FETCH_TIMEOUT_MS 5000
 #define PRESET_MAX_BODY 1024                       /* max POST body size */
 #define PRESET_URL_LEN 448
@@ -59,10 +58,15 @@
 #define PRESET_MSG_LEN 160
 #define PRESET_SERVER_PORT 80
 
-/* Decoded preset (binary) kept in static RAM. Only one run is active at a time
- * (guarded by the busy check), so the worker task is its only writer. */
+/* Decoded preset (binary) kept in static RAM: the last one that was downloaded AND decoded
+ * successfully. A failed decode leaves it untouched. The worker task is the only writer;
+ * the HTTP task reads it through preset_server_preset_snapshot(). Both sides hold
+ * s_data_lock, which also protects the run history below. */
 static uint8_t s_preset_bin[PRESET_BIN_MAX];
 static size_t s_preset_len = 0;
+static bool s_preset_valid = false;
+static preset_info_t s_preset_info;
+static SemaphoreHandle_t s_data_lock;
 
 /* ─── Run state ──────────────────────────────────────────────────────────── */
 enum
@@ -87,6 +91,194 @@ static run_state_t s_state;
 static SemaphoreHandle_t s_lock;
 static esp_timer_handle_t s_sim_timer;
 static httpd_handle_t s_server;
+
+/* ─── Small data helpers ─────────────────────────────────────────────────── */
+
+/* ASCII copy: anything outside 0x20..0x7E becomes '?' (keeps JSON output valid). */
+static void copy_ascii(char *dst, size_t dst_len, const char *src)
+{
+    size_t n = 0;
+    for (; src != NULL && src[n] != '\0' && n + 1 < dst_len; n++)
+    {
+        unsigned char c = (unsigned char)src[n];
+        dst[n] = (c >= 0x20 && c <= 0x7E) ? (char)c : '?';
+    }
+    dst[n] = '\0';
+}
+
+static void format_id(const run_state_t *st, char *out, size_t out_len)
+{
+    if (st == NULL)
+    {
+        out[0] = '\0';
+    }
+    else if (st->id_is_string)
+    {
+        copy_ascii(out, out_len, st->id_str);
+    }
+    else
+    {
+        snprintf(out, out_len, "%.0f", st->id_num);
+    }
+}
+
+/* Standard CRC-32 (IEEE 802.3, same as zlib / Python binascii.crc32). */
+static uint32_t crc32_calc(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++)
+    {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++)
+        {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+/* ─── Run history (last PRESET_HISTORY_LEN requests to POST /iniciar) ───────
+ * Slot = seq % PRESET_HISTORY_LEN, so an entry is found by its sequence number and
+ * the oldest one is overwritten first. An entry is created when the request arrives
+ * (result "running") and completed when the reply is decided. All access holds
+ * s_data_lock. */
+typedef struct
+{
+    preset_history_entry_t e;
+    int64_t start_us;
+} hist_slot_t;
+
+static hist_slot_t s_hist[PRESET_HISTORY_LEN];
+static uint32_t s_hist_next_seq = 1;
+/* Sequence number of the /iniciar request being handled. esp_http_server runs handlers one
+ * at a time in its own task, so a plain static is safe for the duration of the handler. */
+static uint32_t s_req_seq;
+
+static uint32_t hist_begin(void)
+{
+    if (s_data_lock == NULL)
+    {
+        return 0;
+    }
+    xSemaphoreTake(s_data_lock, portMAX_DELAY);
+    uint32_t seq = s_hist_next_seq++;
+    hist_slot_t *s = &s_hist[seq % PRESET_HISTORY_LEN];
+    memset(s, 0, sizeof(*s));
+    s->e.seq = seq;
+    s->start_us = esp_timer_get_time();
+    s->e.start_s = (uint32_t)(s->start_us / 1000000LL);
+    s->e.result = PRESET_HRES_RUNNING;
+    xSemaphoreGive(s_data_lock);
+    return seq;
+}
+
+/* Caller holds s_data_lock. NULL if the slot was already reused. */
+static hist_slot_t *hist_slot(uint32_t seq)
+{
+    if (seq == 0)
+    {
+        return NULL;
+    }
+    hist_slot_t *s = &s_hist[seq % PRESET_HISTORY_LEN];
+    return (s->e.seq == seq) ? s : NULL;
+}
+
+/* Record what is known about the request. NULL arguments leave that field alone. */
+static void hist_set_request(uint32_t seq, const run_state_t *st, const char *produto, const char *cliente,
+                             const char *estado)
+{
+    if (s_data_lock == NULL)
+    {
+        return;
+    }
+    xSemaphoreTake(s_data_lock, portMAX_DELAY);
+    hist_slot_t *s = hist_slot(seq);
+    if (s != NULL)
+    {
+        if (st != NULL)
+        {
+            format_id(st, s->e.id, sizeof(s->e.id));
+        }
+        if (produto != NULL)
+        {
+            copy_ascii(s->e.product, sizeof(s->e.product), produto);
+        }
+        if (cliente != NULL)
+        {
+            copy_ascii(s->e.cliente, sizeof(s->e.cliente), cliente);
+        }
+        if (estado != NULL)
+        {
+            copy_ascii(s->e.estado, sizeof(s->e.estado), estado);
+        }
+    }
+    xSemaphoreGive(s_data_lock);
+}
+
+/* Complete the entry with the HTTP code that was (or will be) sent. */
+static void hist_end(uint32_t seq, int code, preset_level_t level, uint16_t bytes, bool has_crc, uint32_t crc)
+{
+    if (s_data_lock == NULL)
+    {
+        return;
+    }
+    xSemaphoreTake(s_data_lock, portMAX_DELAY);
+    hist_slot_t *s = hist_slot(seq);
+    if (s != NULL)
+    {
+        s->e.code = (uint16_t)code;
+        s->e.result = (code == 200) ? PRESET_HRES_OK
+                      : (code == 400 || code == 401 || code == 409) ? PRESET_HRES_REJECTED
+                                                                     : PRESET_HRES_ERROR;
+        s->e.level = level;
+        s->e.bytes = bytes;
+        s->e.has_crc = has_crc;
+        s->e.crc32 = crc;
+        int64_t ms = (esp_timer_get_time() - s->start_us) / 1000;
+        s->e.duration_ms = (ms < 0) ? 0 : (uint32_t)ms;
+    }
+    xSemaphoreGive(s_data_lock);
+}
+
+size_t preset_server_history_snapshot(preset_history_entry_t *out, size_t max)
+{
+    size_t n = 0;
+    if (s_data_lock == NULL)
+    {
+        return 0;
+    }
+    xSemaphoreTake(s_data_lock, portMAX_DELAY);
+    for (uint32_t seq = s_hist_next_seq - 1;
+         seq >= 1 && (s_hist_next_seq - seq) <= PRESET_HISTORY_LEN && n < max; seq--)
+    {
+        hist_slot_t *s = hist_slot(seq);
+        if (s != NULL)
+        {
+            out[n++] = s->e;
+        }
+    }
+    xSemaphoreGive(s_data_lock);
+    return n;
+}
+
+bool preset_server_preset_snapshot(preset_info_t *info, uint8_t *bin, size_t bin_cap, size_t *bin_len)
+{
+    bool ok = false;
+    if (s_data_lock == NULL)
+    {
+        return false;
+    }
+    xSemaphoreTake(s_data_lock, portMAX_DELAY);
+    if (s_preset_valid && s_preset_len <= bin_cap)
+    {
+        *info = s_preset_info;
+        memcpy(bin, s_preset_bin, s_preset_len);
+        *bin_len = s_preset_len;
+        ok = true;
+    }
+    xSemaphoreGive(s_data_lock);
+    return ok;
+}
 
 static void state_snapshot(run_state_t *out)
 {
@@ -142,6 +334,12 @@ typedef struct
     char cliente[PRESET_FIELD_LEN];
     char estado[PRESET_FIELD_LEN];
     char caminho[PRESET_BASE_LEN];
+    /* History bookkeeping: seq is set by the handler, the rest by run_job() */
+    uint32_t seq;
+    preset_level_t level;
+    uint16_t bytes;
+    bool has_crc;
+    uint32_t crc;
 } job_t;
 
 static QueueHandle_t s_job_queue;
@@ -223,6 +421,8 @@ static esp_err_t send_bad_request(httpd_req_t *req, const run_state_t *id_src, c
     st.status = ST_ERROR;
     add_msg(&st, "%s", reason);
     ESP_LOGW(TAG, "POST /iniciar rejected (400): %s", reason);
+    hist_set_request(s_req_seq, id_src, NULL, NULL, NULL);
+    hist_end(s_req_seq, 400, PRESET_LVL_NA, 0, false, 0);
     return send_status(req, "400 Bad Request", &st);
 }
 
@@ -445,8 +645,10 @@ static void sim_run_done_cb(void *arg)
 /* ─── POST /iniciar ──────────────────────────────────────────────────────── */
 static esp_err_t iniciar_post_handler(httpd_req_t *req)
 {
+    s_req_seq = hist_begin();
     if (!auth_ok(req))
     {
+        hist_end(s_req_seq, 401, PRESET_LVL_NA, 0, false, 0);
         return send_unauthorized(req);
     }
 
@@ -498,6 +700,7 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
     get_str_field(root, "estado", estado, sizeof(estado));
     get_str_field(root, "caminho", caminho, sizeof(caminho));
     cJSON_Delete(root);
+    hist_set_request(s_req_seq, &st, produto, cliente, estado);
 
     if (caminho[0] == '\0')
     {
@@ -537,10 +740,12 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
         blocked.msg_count = 0;
         add_msg(&blocked, "firmware update in progress, try again later");
         ESP_LOGW(TAG, "POST /iniciar rejected (409): firmware update / restart in progress");
+        hist_end(s_req_seq, 409, PRESET_LVL_NA, 0, false, 0);
         return send_status(req, "409 Conflict", &blocked);
     }
     default:
         ESP_LOGW(TAG, "POST /iniciar rejected (409): a run is already in progress");
+        hist_end(s_req_seq, 409, PRESET_LVL_NA, 0, false, 0);
         return send_status(req, "409 Conflict", &cur);
     }
 
@@ -554,6 +759,7 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
     {
         job->req = async_req;
         job->st = st;
+        job->seq = s_req_seq;
         snprintf(job->cliente, sizeof(job->cliente), "%s", cliente);
         snprintf(job->estado, sizeof(job->estado), "%s", estado);
         snprintf(job->caminho, sizeof(job->caminho), "%s", caminho);
@@ -569,12 +775,14 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
     add_msg(&st, "could not schedule the run");
     state_commit(&st);
     ESP_LOGE(TAG, "could not schedule run %.0f", st.id_num);
+    hist_end(s_req_seq, 500, PRESET_LVL_NA, 0, false, 0);
     return send_status(req, "500 Internal Server Error", &st);
 }
 
 /* Worker side: reply to the (async) request, release it and free the job. */
 static void job_finish(job_t *job, const char *http_status, const run_state_t *st)
 {
+    hist_end(job->seq, atoi(http_status), job->level, job->bytes, job->has_crc, job->crc);
     send_status(job->req, http_status, st);
     httpd_req_async_handler_complete(job->req);
     free(job);
@@ -589,15 +797,20 @@ static void run_job(job_t *job)
 
     /* --- Resolve preset: cliente, estado, default --- */
     char urls[3][PRESET_URL_LEN];
+    preset_level_t lvls[3]; /* which lookup level each URL is */
+    int found_idx = -1;
     int url_count = 0;
     if (cliente[0] != '\0')
     {
+        lvls[url_count] = PRESET_LVL_CUSTOMER;
         snprintf(urls[url_count++], PRESET_URL_LEN, "%s%s/%s", caminho, cliente, PRESET_FILE_NAME);
     }
     if (estado[0] != '\0')
     {
+        lvls[url_count] = PRESET_LVL_STATE;
         snprintf(urls[url_count++], PRESET_URL_LEN, "%s%s/%s", caminho, estado, PRESET_FILE_NAME);
     }
+    lvls[url_count] = PRESET_LVL_DEFAULT;
     snprintf(urls[url_count++], PRESET_URL_LEN, "%s%s", caminho, PRESET_FILE_NAME);
 
     fetch_ctx_t ctx = {.cap = PRESET_MAX_HEX_CHARS};
@@ -636,6 +849,7 @@ static void run_job(job_t *job)
         {
             ESP_LOGI(TAG, "preset found: %s (%u chars)", urls[i], (unsigned)ctx.len);
             found = true;
+            found_idx = i;
         }
         else
         {
@@ -658,6 +872,7 @@ static void run_job(job_t *job)
         free(clean);
         st.status = ST_ERROR;
         state_commit(&st);
+        job->level = only_not_found ? PRESET_LVL_NONE : PRESET_LVL_NA;
         if (only_not_found)
         {
             ESP_LOGW(TAG, "run %.0f failed: preset not found", st.id_num);
@@ -669,9 +884,27 @@ static void run_job(job_t *job)
         return;
     }
 
-    /* --- Decode hex --- */
-    s_preset_len = 0;
+    /* --- Decode hex straight into the static buffer. hex_decode() validates everything
+     *     before it writes a byte, so a failure leaves the previous preset untouched. --- */
+    job->level = lvls[found_idx];
+    xSemaphoreTake(s_data_lock, portMAX_DELAY);
     int nbytes = hex_decode(ctx.buf, ctx.len, s_preset_bin, PRESET_BIN_MAX, clean);
+    if (nbytes >= 0)
+    {
+        s_preset_len = (size_t)nbytes;
+        s_preset_valid = true;
+        s_preset_info.seq = job->seq;
+        format_id(&st, s_preset_info.id, sizeof(s_preset_info.id));
+        copy_ascii(s_preset_info.source, sizeof(s_preset_info.source), urls[found_idx]);
+        s_preset_info.level = job->level;
+        s_preset_info.bytes = (uint16_t)nbytes;
+        s_preset_info.crc32 = crc32_calc(s_preset_bin, (size_t)nbytes);
+        s_preset_info.loaded_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
+        job->bytes = (uint16_t)nbytes;
+        job->crc = s_preset_info.crc32;
+        job->has_crc = true;
+    }
+    xSemaphoreGive(s_data_lock);
     if (nbytes < 0)
     {
         free(ctx.buf);
@@ -684,8 +917,6 @@ static void run_job(job_t *job)
         job_finish(job, "500 Internal Server Error", &st);
         return;
     }
-
-    s_preset_len = (size_t)nbytes;
 
     /* --- "Action": log only (UART protocol will come later) --- */
     ESP_LOGI(TAG, "%s", PRESET_SIM_ACTION_TEXT);
@@ -1126,12 +1357,13 @@ void preset_server_start(void)
     }
 
     s_lock = xSemaphoreCreateMutex();
+    s_data_lock = xSemaphoreCreateMutex();
     s_job_queue = xQueueCreate(1, sizeof(job_t *));
     const esp_timer_create_args_t targs = {
         .callback = sim_run_done_cb,
         .name = "sim_run",
     };
-    if (s_lock == NULL || s_job_queue == NULL || esp_timer_create(&targs, &s_sim_timer) != ESP_OK ||
+    if (s_lock == NULL || s_data_lock == NULL || s_job_queue == NULL || esp_timer_create(&targs, &s_sim_timer) != ESP_OK ||
         xTaskCreate(worker_task, "preset_worker", 12288, NULL, 5, NULL) != pdPASS) /* runs the TLS client */
     {
         ESP_LOGE(TAG, "init failed (mutex/queue/timer/worker)");
