@@ -94,6 +94,9 @@ void app_main(void)
     // erase NVS to break the loop (corrupted data is the likely cause)
     nvs_boot_loop_check();
 
+    // Cumulative boot / panic counters, shown in GET /info
+    nvs_boot_counters_update();
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 

@@ -9,6 +9,22 @@
 #define NVS_SCHEMA_KEY "version"
 #define NVS_PANIC_COUNT_KEY "panic_cnt"
 
+#define NVS_BOOT_COUNT_KEY "boot_cnt"
+#define NVS_PANIC_TOTAL_KEY "panic_tot"
+
+static uint32_t s_boot_count = 0;
+static uint32_t s_panic_total = 0;
+static bool s_counters_valid = false;
+
+// Only panic-type resets count as crashes / potential boot loop indicators
+static bool reset_is_crash(esp_reset_reason_t reason)
+{
+    return reason == ESP_RST_PANIC ||
+           reason == ESP_RST_INT_WDT ||
+           reason == ESP_RST_TASK_WDT ||
+           reason == ESP_RST_WDT;
+}
+
 void nvs_schema_check(void)
 {
     nvs_handle_t h;
@@ -75,10 +91,7 @@ bool nvs_boot_loop_check(void)
     esp_reset_reason_t reason = esp_reset_reason();
 
     // Only count panic-type resets as potential boot loop indicators
-    bool is_crash = (reason == ESP_RST_PANIC ||
-                     reason == ESP_RST_INT_WDT ||
-                     reason == ESP_RST_TASK_WDT ||
-                     reason == ESP_RST_WDT);
+    bool is_crash = reset_is_crash(reason);
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_SCHEMA_NAMESPACE, NVS_READWRITE, &h);
@@ -138,6 +151,53 @@ bool nvs_boot_loop_check(void)
     nvs_commit(h);
     nvs_close(h);
     return false;
+}
+
+void nvs_boot_counters_update(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_SCHEMA_NAMESPACE, NVS_READWRITE, &h) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "boot counters: can't open NVS");
+        return;
+    }
+
+    uint32_t boot = 0, panic = 0;
+    nvs_get_u32(h, NVS_BOOT_COUNT_KEY, &boot);   // OK if not found (starts at 0)
+    nvs_get_u32(h, NVS_PANIC_TOTAL_KEY, &panic);
+
+    boot++;
+    if (reset_is_crash(esp_reset_reason()))
+    {
+        panic++;
+    }
+
+    nvs_set_u32(h, NVS_BOOT_COUNT_KEY, boot);
+    nvs_set_u32(h, NVS_PANIC_TOTAL_KEY, panic);
+    if (nvs_commit(h) == ESP_OK)
+    {
+        s_boot_count = boot;
+        s_panic_total = panic;
+        s_counters_valid = true;
+    }
+    nvs_close(h);
+}
+
+bool nvs_boot_counters_get(uint32_t *boot_count, uint32_t *panic_total)
+{
+    if (!s_counters_valid)
+    {
+        return false;
+    }
+    if (boot_count != NULL)
+    {
+        *boot_count = s_boot_count;
+    }
+    if (panic_total != NULL)
+    {
+        *panic_total = s_panic_total;
+    }
+    return true;
 }
 
 void nvs_boot_mark_healthy(void)

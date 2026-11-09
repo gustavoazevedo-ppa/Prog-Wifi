@@ -82,6 +82,10 @@
       rows.push(["Wi-Fi SSID", w.ssid ? w.ssid + " (" + w.rssi + " dBm)" : "not connected"]);
     }
     rows = rows.concat(ifaceRows("Ethernet", i.ethernet));
+    if (i.ethernet) {
+      var e = i.ethernet;
+      rows.push(["Ethernet link", e.link_up ? (or(e.speed_mbps, "?") + " Mbps, " + or(e.duplex, "?") + " duplex") : "down"]);
+    }
 
     rows.push(["Uptime", typeof i.uptime_s === "number" ? fmtUptime(i.uptime_s) : "-"]);
 
@@ -96,7 +100,11 @@
 
     var h = i.heap || {};
     rows.push(["Free heap", or(h.free, "-") + " bytes (min " + or(h.min_free, "-") + ")"]);
+    rows.push(["DMA heap", or(h.dma_free, "-") + " bytes free (min " + or(h.dma_min_free, "-") + ", largest block " + or(h.dma_largest, "-") + ")"]);
     rows.push(["Reset reason", or(i.reset_reason, "-")]);
+    rows.push(["Boot count", or(i.boot_count, "-")]);
+    rows.push(["Panic/watchdog reboots", or(i.panic_count, "-")]);
+    rows.push(["Firmware state", or(i.ota_state, "-")]);
 
     var t = i.test_run || {};
     rows.push(["Test run", or(t.status_text, "-")]);

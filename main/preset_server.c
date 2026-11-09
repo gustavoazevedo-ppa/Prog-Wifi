@@ -34,15 +34,16 @@
 #include "wifi_manager.h"
 #include "mbedtls/base64.h"
 #include "log_server.h"
+#include "nvs_schema.h"
 #include "preset_server.h"
 #include "admin_api.h"
 
 #define TAG "PRESET"
 
 /* ─── Inline constants (phase 1) ─────────────────────────────────────────── */
-#define PRESET_API_KEY "change-me-prog-key"        /* expected X-API-Key value */
+#define PRESET_API_KEY "abcdef12345XYZ"        /* expected X-API-Key value */
 #define CONSOLE_AUTH_USER "admin"                  /* basic auth for /console */
-#define CONSOLE_AUTH_PASS "change-me-console"
+#define CONSOLE_AUTH_PASS "Ppastinger123"
 #define PRESET_FILE_NAME "exemplo.conf"
 #define PRESET_SIM_RUN_MS 5000                     /* simulated run: status 1 -> 2 */
 #define PRESET_SIM_ACTION_TEXT "UART: send preset to DUT and start tests (simulated)"
@@ -806,6 +807,20 @@ static const char *reset_reason_str(esp_reset_reason_t r)
     }
 }
 
+static const char *ota_state_str(esp_ota_img_states_t s)
+{
+    switch (s)
+    {
+    case ESP_OTA_IMG_NEW: return "new";
+    case ESP_OTA_IMG_PENDING_VERIFY: return "pending_verify";
+    case ESP_OTA_IMG_VALID: return "valid";
+    case ESP_OTA_IMG_INVALID: return "invalid";
+    case ESP_OTA_IMG_ABORTED: return "aborted";
+    case ESP_OTA_IMG_UNDEFINED: return "undefined";
+    default: return NULL;
+    }
+}
+
 /* Add {"mac": "...", "ip": "..."|null} (or null when the interface does not exist) */
 static void json_add_iface(cJSON *parent, const char *key, esp_netif_t *netif)
 {
@@ -890,6 +905,24 @@ static esp_err_t info_get_handler(httpd_req_t *req)
         }
     }
     json_add_iface(root, "ethernet", ethernet_get_netif());
+    cJSON *eth = cJSON_GetObjectItemCaseSensitive(root, "ethernet");
+    if (cJSON_IsObject(eth))
+    {
+        int speed = 0;
+        bool full = false;
+        bool up = ethernet_get_link(&speed, &full);
+        cJSON_AddBoolToObject(eth, "link_up", up);
+        if (up)
+        {
+            cJSON_AddNumberToObject(eth, "speed_mbps", speed);
+            cJSON_AddStringToObject(eth, "duplex", full ? "full" : "half");
+        }
+        else
+        {
+            cJSON_AddNullToObject(eth, "speed_mbps");
+            cJSON_AddNullToObject(eth, "duplex");
+        }
+    }
 
     cJSON_AddNumberToObject(root, "uptime_s", (double)(esp_timer_get_time() / 1000000LL));
 
@@ -925,8 +958,37 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     {
         cJSON_AddNumberToObject(heap, "free", esp_get_free_heap_size());
         cJSON_AddNumberToObject(heap, "min_free", esp_get_minimum_free_heap_size());
+        /* DMA-capable heap: the ENC28J60 receive buffers come from here */
+        cJSON_AddNumberToObject(heap, "dma_free", heap_caps_get_free_size(MALLOC_CAP_DMA));
+        cJSON_AddNumberToObject(heap, "dma_min_free", heap_caps_get_minimum_free_size(MALLOC_CAP_DMA));
+        cJSON_AddNumberToObject(heap, "dma_largest", heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
     }
     cJSON_AddStringToObject(root, "reset_reason", reset_reason_str(esp_reset_reason()));
+
+    uint32_t boot_cnt = 0, panic_tot = 0;
+    if (nvs_boot_counters_get(&boot_cnt, &panic_tot))
+    {
+        cJSON_AddNumberToObject(root, "boot_count", boot_cnt);
+        cJSON_AddNumberToObject(root, "panic_count", panic_tot);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "boot_count");
+        cJSON_AddNullToObject(root, "panic_count");
+    }
+
+    esp_ota_img_states_t ota_state;
+    const char *ota_txt = (part != NULL && esp_ota_get_state_partition(part, &ota_state) == ESP_OK)
+                              ? ota_state_str(ota_state)
+                              : NULL;
+    if (ota_txt != NULL)
+    {
+        cJSON_AddStringToObject(root, "ota_state", ota_txt);
+    }
+    else
+    {
+        cJSON_AddNullToObject(root, "ota_state"); /* e.g. flashed over serial: no OTA state recorded */
+    }
 
     /* Test run */
     static const char *const run_txt[] = {"idle", "running", "finished OK", "finished with error"};

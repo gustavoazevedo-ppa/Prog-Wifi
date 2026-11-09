@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Current NVS schema version. Increment this whenever the NVS layout changes
 // (keys renamed, removed, format changed, etc.). On mismatch, NVS is erased
@@ -20,6 +21,19 @@ void nvs_schema_check(void);
 // Call after nvs_flash_init() and nvs_schema_check().
 // Returns true if NVS was erased due to boot loop detection.
 bool nvs_boot_loop_check(void);
+
+// Persistent diagnostics counters (NVS keys "boot_cnt" / "panic_tot" in the same
+// namespace; adding keys does not change NVS_SCHEMA_VERSION). Both are cleared
+// by anything that erases NVS (format, schema change, boot loop recovery).
+//   boot_count  : every boot, including this one.
+//   panic_total : boots that followed a panic or watchdog reset (cumulative,
+//                 unlike the consecutive-panic counter used for boot loop recovery).
+// Call once per boot, after nvs_schema_check() and nvs_boot_loop_check().
+void nvs_boot_counters_update(void);
+
+// Returns the values cached by nvs_boot_counters_update(). Returns false (outputs
+// untouched) if NVS was unusable. Either output pointer may be NULL.
+bool nvs_boot_counters_get(uint32_t *boot_count, uint32_t *panic_total);
 
 // Mark the current boot as healthy. Call this once the application has been
 // running successfully for a reasonable period (e.g., 30s timer or after

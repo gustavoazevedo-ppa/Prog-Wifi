@@ -148,6 +148,30 @@ esp_netif_t *ethernet_get_netif(void)
     return s_eth_netif;
 }
 
+bool ethernet_get_link(int *speed_mbps, bool *full_duplex)
+{
+    if (s_eth_handle == NULL || !ethernet_connected)
+    {
+        return false;
+    }
+    eth_speed_t speed = ETH_SPEED_10M;
+    eth_duplex_t duplex = ETH_DUPLEX_HALF;
+    if (esp_eth_ioctl(s_eth_handle, ETH_CMD_G_SPEED, &speed) != ESP_OK ||
+        esp_eth_ioctl(s_eth_handle, ETH_CMD_G_DUPLEX_MODE, &duplex) != ESP_OK)
+    {
+        return false;
+    }
+    if (speed_mbps != NULL)
+    {
+        *speed_mbps = (speed == ETH_SPEED_100M) ? 100 : 10;
+    }
+    if (full_duplex != NULL)
+    {
+        *full_duplex = (duplex == ETH_DUPLEX_FULL);
+    }
+    return true;
+}
+
 // --- Static IP helpers ---
 
 static bool ethernet_apply_static(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns1, uint32_t dns2)
