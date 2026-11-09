@@ -47,6 +47,7 @@
 #define PRESET_SIM_ACTION_TEXT "UART: send preset to DUT and start tests (simulated)"
 #define PRESET_UART_BAUD 9600                      /* used to emulate TX time */
 #define PRESET_MAX_HEX_CHARS 6144                  /* 2 KB binary = 4096 hex chars, plus slack */
+#define PRESET_BIN_MAX 2048                        /* max decoded preset size (bytes) */
 #define PRESET_FETCH_TIMEOUT_MS 5000
 #define PRESET_MAX_BODY 1024                       /* max POST body size */
 #define PRESET_URL_LEN 448
@@ -55,6 +56,11 @@
 #define PRESET_MAX_MSGS 4
 #define PRESET_MSG_LEN 160
 #define PRESET_SERVER_PORT 80
+
+/* Decoded preset (binary) kept in static RAM. Only one run is active at a time
+ * (guarded by the busy check), so the worker task is its only writer. */
+static uint8_t s_preset_bin[PRESET_BIN_MAX];
+static size_t s_preset_len = 0;
 
 /* ─── Run state ──────────────────────────────────────────────────────────── */
 enum
@@ -569,12 +575,10 @@ static void run_job(job_t *job)
     fetch_ctx_t ctx = {.cap = PRESET_MAX_HEX_CHARS};
     ctx.buf = malloc(PRESET_MAX_HEX_CHARS + 1);
     char *clean = malloc(PRESET_MAX_HEX_CHARS + 1);
-    uint8_t *bin = malloc(PRESET_MAX_HEX_CHARS / 2);
-    if (ctx.buf == NULL || clean == NULL || bin == NULL)
+    if (ctx.buf == NULL || clean == NULL)
     {
         free(ctx.buf);
         free(clean);
-        free(bin);
         st.status = ST_ERROR;
         add_msg(&st, "out of memory");
         state_commit(&st);
@@ -624,7 +628,6 @@ static void run_job(job_t *job)
     {
         free(ctx.buf);
         free(clean);
-        free(bin);
         st.status = ST_ERROR;
         state_commit(&st);
         if (only_not_found)
@@ -639,12 +642,12 @@ static void run_job(job_t *job)
     }
 
     /* --- Decode hex --- */
-    int nbytes = hex_decode(ctx.buf, ctx.len, bin, PRESET_MAX_HEX_CHARS / 2, clean);
+    s_preset_len = 0;
+    int nbytes = hex_decode(ctx.buf, ctx.len, s_preset_bin, PRESET_BIN_MAX, clean);
     if (nbytes < 0)
     {
         free(ctx.buf);
         free(clean);
-        free(bin);
         st.msg_count = 0;
         st.status = ST_ERROR;
         add_msg(&st, "preset file is not valid hex");
@@ -654,12 +657,13 @@ static void run_job(job_t *job)
         return;
     }
 
+    s_preset_len = (size_t)nbytes;
+
     /* --- "Action": log only (UART protocol will come later) --- */
     ESP_LOGI(TAG, "%s", PRESET_SIM_ACTION_TEXT);
     ESP_LOGI(TAG, "preset (%d bytes): %s", nbytes, clean);
     free(ctx.buf);
     free(clean);
-    free(bin);
 
     /* Emulate UART transmit time so the Stinger timeout is exercised realistically */
     uint32_t tx_ms = ((uint32_t)nbytes * 10u * 1000u) / PRESET_UART_BAUD + 1u;

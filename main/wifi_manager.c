@@ -10,7 +10,7 @@
 
 #define WIFI_SSID "PPA-MINAS"
 #define WIFI_PASS "ppalegero"
-#define WIFI_ENABLED 1 // 1 = Wi-Fi on, 0 = Wi-Fi disabled (driver never started, Ethernet only)
+#define WIFI_ENABLED 0 // 1 = Wi-Fi on, 0 = Wi-Fi disabled (driver never started, Ethernet only)
 #define WIFI_MAX_RETRY 1
 #define WIFI_RECONNECT_DELAY_MS 5000 // Base delay for the first delayed reconnect attempt
 
