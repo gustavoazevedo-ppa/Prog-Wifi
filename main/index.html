@@ -12,14 +12,33 @@
   th { color: #555; font-weight: 600; }
   #status { margin: .6em 0; font-size: .9em; color: #555; }
   #status.error { color: #b00020; font-weight: 600; }
+  #btn-refresh { padding: .45em .9em; font-size: .95em; }
+  h2 { margin: 1.4em 0 .4em; font-size: 1.1em; }
+  #admin-buttons button { margin: 0 .4em .5em 0; padding: .45em .9em; font-size: .95em; }
+  #admin-buttons button.danger { color: #b00020; }
+  #admin-msg { margin: .5em 0; font-size: .9em; color: #555; min-height: 1.2em; }
+  #admin-msg.error { color: #b00020; font-weight: 600; }
+  progress { width: 16em; }
 </style>
 </head>
 <body>
 <h1>Prog Wi-Fi</h1>
+<button type="button" id="btn-refresh">Refresh</button>
 <div id="status" role="status" aria-live="polite">Loading...</div>
 <table>
   <tbody id="rows"></tbody>
 </table>
+
+<h2>Admin</h2>
+<div id="admin-msg" role="status" aria-live="polite">Actions ask for the admin user and password.</div>
+<progress id="admin-progress" max="100" value="0" hidden aria-label="Update progress"></progress>
+<div id="admin-buttons">
+  <button type="button" id="btn-console">Enable log console</button>
+  <button type="button" id="btn-check">Check for updates</button>
+  <button type="button" id="btn-update">Update firmware</button>
+  <button type="button" id="btn-reboot">Reboot</button>
+  <button type="button" id="btn-format" class="danger">Erase settings (NVS)</button>
+</div>
 
 <script>
 (function () {
@@ -120,6 +139,145 @@
         setStatus("Could not load device info: " + err.message, true);
       });
   }
+
+  // ---- Admin actions (HTTP Basic auth: the browser asks for the credentials) ----
+  var adminButtons = document.querySelectorAll("#admin-buttons button");
+  var progressEl = document.getElementById("admin-progress");
+
+  function adminMsg(text, isError) {
+    var el = document.getElementById("admin-msg");
+    el.textContent = text;
+    el.className = isError ? "error" : "";
+  }
+
+  function setBusy(busy) {
+    for (var k = 0; k < adminButtons.length; k++) { adminButtons[k].disabled = busy; }
+    if (!busy) { progressEl.hidden = true; }
+  }
+
+  // POST with the X-Admin header the device requires. Resolves {status, ok, text, json}.
+  function adminPost(path) {
+    return fetch(path, { method: "POST", headers: { "X-Admin": "1" }, cache: "no-store" })
+      .then(function (res) {
+        return res.text().then(function (t) {
+          var j = null;
+          try { j = JSON.parse(t); } catch (e) { j = null; }
+          return { status: res.status, ok: res.ok, text: t, json: j };
+        });
+      });
+  }
+
+  function replyText(r) {
+    if (r.status === 401) { return "Authentication required (wrong or missing credentials)."; }
+    if (r.json && r.json.message) { return r.json.message; }
+    return r.text ? r.text.trim() : "HTTP " + r.status;
+  }
+
+  // Poll /admin/status until the running operation finishes.
+  function pollAdmin() {
+    fetch("/admin/status", { cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) { throw new Error("HTTP " + res.status); }
+        return res.json();
+      })
+      .then(function (s) {
+        if (s.op !== "idle") {
+          if (s.op === "updating") {
+            progressEl.hidden = false;
+            progressEl.value = s.progress;
+            adminMsg("Updating firmware... " + s.progress + "%", false);
+          } else {
+            adminMsg("Working: " + s.op + "...", false);
+          }
+          setTimeout(pollAdmin, 1000);
+          return;
+        }
+        var msg = (s.last && s.last.message) ? s.last.message : "Done.";
+        if (s.staged) { msg += " (Firmware " + s.staged_version + " is installed: reboot to run it.)"; }
+        adminMsg(msg, !!(s.last && !s.last.ok));
+        setBusy(false);
+        refresh();
+      })
+      .catch(function (err) {
+        adminMsg("Lost contact with the device: " + err.message, true);
+        setBusy(false);
+      });
+  }
+
+  // After reboot/format: wait until the device answers again.
+  function waitForDevice() {
+    fetch("/info", { cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) { throw new Error("HTTP " + res.status); }
+        adminMsg("Device is back.", false);
+        setBusy(false);
+        refresh();
+      })
+      .catch(function () { setTimeout(waitForDevice, 2000); });
+  }
+
+  function runJob(path, startedText) {
+    setBusy(true);
+    adminMsg(startedText, false);
+    adminPost(path).then(function (r) {
+      if (r.status === 202) { setTimeout(pollAdmin, 500); return; }
+      adminMsg(replyText(r), true);
+      setBusy(false);
+    }).catch(function (err) {
+      adminMsg("Request failed: " + err.message, true);
+      setBusy(false);
+    });
+  }
+
+  function runRestart(path, startedText) {
+    setBusy(true);
+    adminMsg(startedText, false);
+    adminPost(path).then(function (r) {
+      if (r.ok) {
+        adminMsg(replyText(r) + ". Waiting for the device...", false);
+        setTimeout(waitForDevice, 3000);
+        return;
+      }
+      adminMsg(replyText(r), true);
+      setBusy(false);
+    }).catch(function (err) {
+      adminMsg("Request failed: " + err.message, true);
+      setBusy(false);
+    });
+  }
+
+  document.getElementById("btn-refresh").addEventListener("click", refresh);
+
+  document.getElementById("btn-console").addEventListener("click", function () {
+    setBusy(true);
+    // POST /console answers with plain text (port + time window).
+    adminPost("/console").then(function (r) {
+      adminMsg(replyText(r), !r.ok);
+      setBusy(false);
+    }).catch(function (err) {
+      adminMsg("Request failed: " + err.message, true);
+      setBusy(false);
+    });
+  });
+
+  document.getElementById("btn-check").addEventListener("click", function () {
+    runJob("/admin/update/check", "Checking for updates...");
+  });
+
+  document.getElementById("btn-update").addEventListener("click", function () {
+    if (!confirm("Download and install the newest firmware (if any)?\nIt only runs after a reboot.")) { return; }
+    runJob("/admin/update/apply", "Starting update...");
+  });
+
+  document.getElementById("btn-reboot").addEventListener("click", function () {
+    if (!confirm("Reboot the device now?")) { return; }
+    runRestart("/admin/reboot", "Rebooting...");
+  });
+
+  document.getElementById("btn-format").addEventListener("click", function () {
+    if (!confirm("ERASE all saved settings (NVS), e.g. a static IP, and reboot?\nThe device may come back with a different IP address.")) { return; }
+    runRestart("/admin/format?confirm=yes", "Erasing settings...");
+  });
 
   refresh();
 })();

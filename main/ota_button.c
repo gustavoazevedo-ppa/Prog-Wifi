@@ -252,13 +252,21 @@ static esp_err_t ota_decrypt_cb(decrypt_cb_arg_t *args, void *user_ctx)
  * 3. If newer, downloads and flashes the binary via esp_https_ota
  *
  * @param[out] progress_pct  Pointer updated with progress 0-100 during download.
- * @return  ESP_OK if update was applied successfully,
+ * @param[in]  apply         false = only check the manifest (nothing is downloaded);
+ *                           true  = also download and flash the new image.
+ * @param[in]  leds          true = blink the LED while downloading (button flow);
+ *                           false = leave the LEDs alone (HTTP admin flow).
+ * @param[out] remote_ver    Optional: receives the manifest version string.
+ * @param[in]  remote_ver_len Size of remote_ver.
+ * @return  ESP_OK if an update was applied (apply) or is available (check only),
  *          ESP_ERR_NOT_FOUND if no update available (same/older version),
  *          other esp_err_t on failure.
  */
-static esp_err_t ota_check_and_apply(const char *manifest_url, uint8_t *progress_pct)
+static esp_err_t ota_check_and_apply(const char *manifest_url, uint8_t *progress_pct, bool apply, bool leds,
+                                     char *remote_ver, size_t remote_ver_len)
 {
     if (progress_pct) *progress_pct = 0;
+    if (remote_ver && remote_ver_len > 0) remote_ver[0] = '\0';
 
     /* Step 1: Download manifest */
     char manifest_buf[MANIFEST_MAX_SIZE];
@@ -302,6 +310,10 @@ static esp_err_t ota_check_and_apply(const char *manifest_url, uint8_t *progress
     const char *remote_version = version_json->valuestring;
     const char *firmware_url = url_json->valuestring;
 
+    if (remote_ver && remote_ver_len > 0) {
+        strlcpy(remote_ver, remote_version, remote_ver_len);
+    }
+
     /* Step 3: Compare versions */
     const esp_app_desc_t *app_desc = esp_app_get_description();
     ESP_LOGI(TAG, "Running: %s, Remote: %s", app_desc->version, remote_version);
@@ -310,6 +322,12 @@ static esp_err_t ota_check_and_apply(const char *manifest_url, uint8_t *progress
         ESP_LOGI(TAG, "No newer firmware available");
         cJSON_Delete(root);
         return ESP_ERR_NOT_FOUND;
+    }
+
+    if (!apply) {
+        ESP_LOGI(TAG, "Newer firmware available (%s)", remote_version);
+        cJSON_Delete(root);
+        return ESP_OK;
     }
 
     ESP_LOGI(TAG, "Newer firmware found (%s), downloading from: %s", remote_version, firmware_url);
@@ -359,7 +377,7 @@ static esp_err_t ota_check_and_apply(const char *manifest_url, uint8_t *progress
     int downloaded = 0;
 
     /* Start LED blink — slow initially, speeds up with progress */
-    led_blink_start(BLINK_SLOW_MS);
+    if (leds) led_blink_start(BLINK_SLOW_MS);
 
     while (1) {
         err = esp_https_ota_perform(ota_handle);
@@ -370,7 +388,7 @@ static esp_err_t ota_check_and_apply(const char *manifest_url, uint8_t *progress
                 *progress_pct = 10 + (uint8_t)((downloaded * 85L) / total_size);
             }
             /* Accelerate blink as download progresses */
-            if (total_size > 0) {
+            if (leds && total_size > 0) {
                 uint32_t interval = BLINK_SLOW_MS - (uint32_t)(((BLINK_SLOW_MS - BLINK_FAST_MS) * downloaded) / total_size);
                 s_blink_interval_ms = interval;
             }
@@ -378,7 +396,7 @@ static esp_err_t ota_check_and_apply(const char *manifest_url, uint8_t *progress
         }
         break;
     }
-    led_blink_stop();
+    if (leds) led_blink_stop();
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "OTA perform failed: %s", esp_err_to_name(err));
@@ -439,6 +457,28 @@ static esp_err_t flash_format(void)
 }
 
 /* --------------------------------------------------------------------------
+ * Public helpers used by the HTTP admin API (admin_api.c).
+ * Same logic as the button flow, but no LED handling and no automatic
+ * NVS erase / restart: the caller decides.
+ * -------------------------------------------------------------------------- */
+
+esp_err_t ota_check_update(const char *manifest_url, char *remote_ver, size_t remote_ver_len)
+{
+    return ota_check_and_apply(manifest_url, NULL, false, false, remote_ver, remote_ver_len);
+}
+
+esp_err_t ota_apply_update(const char *manifest_url, volatile uint8_t *progress_pct,
+                           char *remote_ver, size_t remote_ver_len)
+{
+    return ota_check_and_apply(manifest_url, (uint8_t *)progress_pct, true, false, remote_ver, remote_ver_len);
+}
+
+esp_err_t ota_format_nvs(void)
+{
+    return flash_format();
+}
+
+/* --------------------------------------------------------------------------
  * OTA process (runs after button held for 10s)
  * -------------------------------------------------------------------------- */
 
@@ -458,7 +498,7 @@ static void ota_process(void)
     ESP_LOGI(TAG, "Checking for OTA update...");
     led_blink_start(BLINK_SLOW_MS);
 
-    esp_err_t ota_result = ota_check_and_apply(OTA_MANIFEST_URL, &progress);
+    esp_err_t ota_result = ota_check_and_apply(OTA_MANIFEST_URL, &progress, true, true, NULL, 0);
 
     if (ota_result == ESP_OK) {
         ESP_LOGI(TAG, "OTA update applied successfully");

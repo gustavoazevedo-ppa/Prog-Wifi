@@ -7,6 +7,7 @@ idf_component_register(
         "ota_button.c"
         "preset_server.c"
         "log_server.c"
+        "admin_api.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash

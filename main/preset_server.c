@@ -35,6 +35,7 @@
 #include "mbedtls/base64.h"
 #include "log_server.h"
 #include "preset_server.h"
+#include "admin_api.h"
 
 #define TAG "PRESET"
 
@@ -938,7 +939,7 @@ static esp_err_t info_get_handler(httpd_req_t *req)
 }
 
 /* ─── GET|POST /console : open the log console port (basic auth) ─────────── */
-static bool basic_auth_ok(httpd_req_t *req)
+bool preset_server_basic_auth_ok(httpd_req_t *req)
 {
     char hdr[160];
     size_t len = httpd_req_get_hdr_value_len(req, "Authorization");
@@ -979,9 +980,21 @@ static bool basic_auth_ok(httpd_req_t *req)
     return diff == 0;
 }
 
+bool preset_server_run_active(void)
+{
+    run_state_t st;
+    state_snapshot(&st);
+    return st.status == ST_RUNNING;
+}
+
+bool preset_server_running(void)
+{
+    return s_server != NULL;
+}
+
 static esp_err_t console_handler(httpd_req_t *req)
 {
-    if (!basic_auth_ok(req))
+    if (!preset_server_basic_auth_ok(req))
     {
         ESP_LOGW(TAG, "%s /console rejected (401): bad or missing basic auth", req->method == HTTP_POST ? "POST" : "GET");
         httpd_resp_set_status(req, "401 Unauthorized");
@@ -1055,7 +1068,7 @@ void preset_server_start(void)
     config.stack_size = 6144;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 16; /* 7 here + 5 admin endpoints (admin_api.c) */
     config.recv_wait_timeout = 10;
 
     if (httpd_start(&s_server, &config) != ESP_OK)
@@ -1107,5 +1120,6 @@ void preset_server_start(void)
     httpd_register_uri_handler(s_server, &status_uri);
     httpd_register_uri_handler(s_server, &root_uri);
     httpd_register_uri_handler(s_server, &index_uri);
+    admin_api_register(s_server);
     ESP_LOGI(TAG, "HTTP API listening on port %d (POST /iniciar, GET /status)", PRESET_SERVER_PORT);
 }

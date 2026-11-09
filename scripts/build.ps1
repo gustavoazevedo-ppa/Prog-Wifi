@@ -11,9 +11,9 @@
 # consumed by this script (see below). With no args, builds.
 #
 # PRE-ENCRYPTED OTA - RELEASE STEP (opt-in via --encrypt):
-#   The normal build produces the PLAINTEXT build\modulo_wifi.bin, which is what
+#   The normal build produces the PLAINTEXT build\prog_wifi.bin, which is what
 #   beta testers flash over UART. For the OTA path, that same .bin is encrypted
-#   with the RSA PUBLIC key to produce build\modulo_wifi_enc.bin, which is what
+#   with the RSA PUBLIC key to produce build\prog_wifi_enc.bin, which is what
 #   gets uploaded to S3 (the manifest "url" points at it).
 #
 #   Pass --encrypt to run that encrypt step automatically after a successful
@@ -60,26 +60,26 @@ if ($doEncrypt) {
 
     $tool    = Join-Path $repoRoot "managed_components\espressif__esp_encrypted_img\tools\esp_enc_img_gen.py"
     $pubKey  = Join-Path $repoRoot "main\ota_decrypt_pub.pem"
-    $plain   = Join-Path $repoRoot "build\modulo_wifi.bin"
-    $encOut  = Join-Path $repoRoot "build\modulo_wifi_enc.bin"
+    $plain   = Join-Path $repoRoot "build\prog_wifi.bin"
+    $encOut  = Join-Path $repoRoot "build\prog_wifi_enc.bin"
 
     if (-not (Test-Path $pubKey)) {
-        Write-Warning "--encrypt: public key not found at main\ota_decrypt_pub.pem - skipping encryption. (Build succeeded; plaintext build\modulo_wifi.bin is ready.)"
+        Write-Warning "--encrypt: public key not found at main\ota_decrypt_pub.pem - skipping encryption. (Build succeeded; plaintext build\prog_wifi.bin is ready.)"
         exit 0
     }
     if (-not (Test-Path $plain)) {
-        Write-Warning "--encrypt: plaintext build\modulo_wifi.bin not found - nothing to encrypt."
+        Write-Warning "--encrypt: plaintext build\prog_wifi.bin not found - nothing to encrypt."
         exit 0
     }
 
-    Write-Host "Encrypting OTA artifact: build\modulo_wifi_enc.bin"
+    Write-Host "Encrypting OTA artifact: build\prog_wifi_enc.bin"
     & python $tool encrypt $plain $pubKey $encOut
     $encExit = $LASTEXITCODE
     if ($encExit -ne 0) {
         Write-Warning "--encrypt: encryption step failed (exit $encExit)."
         exit $encExit
     }
-    Write-Host "Encrypted OTA artifact ready: build\modulo_wifi_enc.bin (upload to S3, point manifest url at it)."
+    Write-Host "Encrypted OTA artifact ready: build\prog_wifi_enc.bin (upload to S3, point manifest url at it)."
     exit 0
 }
 

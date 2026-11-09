@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "freertos/timers.h"
+#include "esp_log.h"
 #include "nvs_flash.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -113,19 +114,29 @@ void app_main(void)
 
     wifi_init_sta();
 
-    // Mark firmware as valid — rollback protection.
-    // If we reach this point, basic init succeeded (NVS, netif, WiFi/Ethernet drivers).
-    // If a bad OTA causes a crash before here, the bootloader will revert automatically.
-    esp_ota_mark_app_valid_cancel_rollback();
-
     // Physical recovery / OTA path
     ota_button_init();
 
-    // Local HTTP API (POST /iniciar, GET /status) on Wi-Fi and Ethernet
+    // Local HTTP API (POST /iniciar, GET /status, /admin/*) on Wi-Fi and Ethernet
     preset_server_start();
 
     // Read-only remote log console (TCP port 2323)
     log_server_start();
+
+    // Mark firmware as valid — rollback protection.
+    // This is done only after the HTTP server is up: since updates can now be pushed
+    // remotely, an image that boots but cannot serve the API must roll back by itself.
+    // (Deliberately NOT gated on getting an IP: a unit booted without a cable must not
+    // lose a good update on its next reset.) If a bad OTA crashes before here, or the
+    // server fails to start, the bootloader reverts to the previous image.
+    if (preset_server_running())
+    {
+        esp_ota_mark_app_valid_cancel_rollback();
+    }
+    else
+    {
+        ESP_LOGE(TAG, "HTTP server not running: firmware NOT marked valid (rollback stays armed)");
+    }
 
     xTaskCreate(status_led_task, "status_led_task", 2048, NULL, 5, NULL);
 
