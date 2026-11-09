@@ -18,6 +18,7 @@
 #include "esp_system.h"
 #include "esp_app_desc.h"
 #include "admin_api.h"
+#include "http_log.h"
 #include "ota_button.h"
 #include "preset_server.h"
 
@@ -104,7 +105,7 @@ static esp_err_t reply(httpd_req_t *req, const char *status, bool ok, const char
 {
     char buf[160];
     snprintf(buf, sizeof(buf), "{\"ok\":%s,\"message\":\"%s\"}", ok ? "true" : "false", msg);
-    httpd_resp_set_status(req, status);
+    http_log_set_status(req, status);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
@@ -113,7 +114,7 @@ static esp_err_t reply_unauthorized(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "%s %s rejected (401): bad or missing basic auth",
              req->method == HTTP_POST ? "POST" : "GET", req->uri);
-    httpd_resp_set_status(req, "401 Unauthorized");
+    http_log_set_status(req, "401 Unauthorized");
     httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"Prog\"");
     return httpd_resp_send(req, NULL, 0);
 }
@@ -620,7 +621,7 @@ void admin_api_register(httpd_handle_t server)
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++)
     {
-        if (httpd_register_uri_handler(server, &uris[i]) != ESP_OK)
+        if (http_log_register(server, &uris[i]) != ESP_OK)
         {
             ESP_LOGE(TAG, "failed to register %s", uris[i].uri);
         }

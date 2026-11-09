@@ -37,6 +37,7 @@
 #include "nvs_schema.h"
 #include "preset_server.h"
 #include "admin_api.h"
+#include "http_log.h"
 
 #define TAG "PRESET"
 
@@ -340,6 +341,7 @@ typedef struct
     uint16_t bytes;
     bool has_crc;
     uint32_t crc;
+    int64_t t0_us; /* when the request arrived, for the request log */
 } job_t;
 
 static QueueHandle_t s_job_queue;
@@ -374,7 +376,7 @@ static esp_err_t send_status(httpd_req_t *req, const char *http_status, const ru
     {
         cJSON_Delete(root);
         cJSON_Delete(msgs);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        http_log_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
         return ESP_FAIL;
     }
 
@@ -397,11 +399,11 @@ static esp_err_t send_status(httpd_req_t *req, const char *http_status, const ru
     cJSON_Delete(root);
     if (json == NULL)
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        http_log_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
         return ESP_FAIL;
     }
 
-    httpd_resp_set_status(req, http_status);
+    http_log_set_status(req, http_status);
     httpd_resp_set_type(req, "application/json");
     esp_err_t err = httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
     free(json);
@@ -430,7 +432,7 @@ static esp_err_t send_unauthorized(httpd_req_t *req)
 {
     ESP_LOGW(TAG, "%s %s rejected (401): missing or wrong X-API-Key",
              req->method == HTTP_POST ? "POST" : "GET", req->uri);
-    httpd_resp_set_status(req, "401 Unauthorized");
+    http_log_set_status(req, "401 Unauthorized");
     return httpd_resp_send(req, NULL, 0);
 }
 
@@ -760,12 +762,14 @@ static esp_err_t iniciar_post_handler(httpd_req_t *req)
         job->req = async_req;
         job->st = st;
         job->seq = s_req_seq;
+        job->t0_us = http_log_request_start_us();
         snprintf(job->cliente, sizeof(job->cliente), "%s", cliente);
         snprintf(job->estado, sizeof(job->estado), "%s", estado);
         snprintf(job->caminho, sizeof(job->caminho), "%s", caminho);
         if (xQueueSend(s_job_queue, &job, 0) == pdTRUE)
         {
-            return ESP_OK; /* worker replies and completes the request */
+            http_log_async_detach(); /* the worker logs this request when it replies */
+            return ESP_OK;           /* worker replies and completes the request */
         }
         httpd_req_async_handler_complete(async_req);
     }
@@ -784,6 +788,7 @@ static void job_finish(job_t *job, const char *http_status, const run_state_t *s
 {
     hist_end(job->seq, atoi(http_status), job->level, job->bytes, job->has_crc, job->crc);
     send_status(job->req, http_status, st);
+    http_log_async_done(job->req, http_status, job->t0_us);
     httpd_req_async_handler_complete(job->req);
     free(job);
 }
@@ -1093,7 +1098,7 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     cJSON *root = cJSON_CreateObject();
     if (root == NULL)
     {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return http_log_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
     }
 
     const esp_app_desc_t *app = esp_app_get_description();
@@ -1248,7 +1253,7 @@ static esp_err_t info_get_handler(httpd_req_t *req)
     cJSON_Delete(root);
     if (json == NULL)
     {
-        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return http_log_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
     }
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -1316,7 +1321,7 @@ static esp_err_t console_handler(httpd_req_t *req)
     if (!preset_server_basic_auth_ok(req))
     {
         ESP_LOGW(TAG, "%s /console rejected (401): bad or missing basic auth", req->method == HTTP_POST ? "POST" : "GET");
-        httpd_resp_set_status(req, "401 Unauthorized");
+        http_log_set_status(req, "401 Unauthorized");
         httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"Prog\"");
         return httpd_resp_send(req, NULL, 0);
     }
@@ -1343,7 +1348,7 @@ static esp_err_t console_handler(httpd_req_t *req)
         break;
     }
     ESP_LOGI(TAG, "/console authenticated: %s", http);
-    httpd_resp_set_status(req, http);
+    http_log_set_status(req, http);
     httpd_resp_set_type(req, "text/plain");
     return httpd_resp_send(req, msg, HTTPD_RESP_USE_STRLEN);
 }
@@ -1397,6 +1402,7 @@ void preset_server_start(void)
         s_server = NULL;
         return;
     }
+    http_log_install_error_handlers(s_server);
 
     const httpd_uri_t post_uri = {
         .uri = "/iniciar",
@@ -1428,18 +1434,18 @@ void preset_server_start(void)
         .method = HTTP_POST,
         .handler = console_handler,
     };
-    httpd_register_uri_handler(s_server, &console_get_uri);
-    httpd_register_uri_handler(s_server, &console_post_uri);
+    http_log_register(s_server, &console_get_uri);
+    http_log_register(s_server, &console_post_uri);
     const httpd_uri_t info_uri = {
         .uri = "/info",
         .method = HTTP_GET,
         .handler = info_get_handler,
     };
-    httpd_register_uri_handler(s_server, &info_uri);
-    httpd_register_uri_handler(s_server, &post_uri);
-    httpd_register_uri_handler(s_server, &status_uri);
-    httpd_register_uri_handler(s_server, &root_uri);
-    httpd_register_uri_handler(s_server, &index_uri);
+    http_log_register(s_server, &info_uri);
+    http_log_register(s_server, &post_uri);
+    http_log_register(s_server, &status_uri);
+    http_log_register(s_server, &root_uri);
+    http_log_register(s_server, &index_uri);
     admin_api_register(s_server);
     ESP_LOGI(TAG, "HTTP API listening on port %d (POST /iniciar, GET /status)", PRESET_SERVER_PORT);
 }
