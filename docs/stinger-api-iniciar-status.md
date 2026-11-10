@@ -95,7 +95,7 @@ Qualquer falha em uma URL (404, timeout, 5xx, TLS) leva à próxima. O conteúdo
   "produto": "F02303100",
   "cliente": "008249",
   "estado": "SP",
-  "caminho": "https://preset.ppa.com.br/agility123/"
+  "caminho": "https://download.citrox.com.br.s3.us-east-1.amazonaws.com/fw/"
 }
 ```
 
