@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Update foundation steering files",
+      "trigger": "Stop",
+      "description": "After each agent run, checks whether product.md, tech.md or structure.md in .kiro/steering are out of date and updates only the affected lines.",
+      "action": {
+        "type": "agent",
+        "prompt": "Foundation steering check. Look at what changed in this session (files added, removed or renamed; edits to main/CMakeLists.txt, main/idf_component.yml, partitions.csv, sdkconfig.defaults, main/app_main wiring, public headers in main/*.h, docs/*.md, scripts/). Then decide whether any of these steering files is now out of date: .kiro/steering/product.md (purpose, endpoints, reference docs), .kiro/steering/tech.md (stack, dependencies, conventions, boot sequence, hardware pins), .kiro/steering/structure.md (repo layout, main/ module table). Only update a file if a fact in it became wrong or a new module, dependency, endpoint, doc or convention is missing. Make minimal edits to the affected lines, keep the existing style, and never touch build.md or enc28j60-vendored.md. Do not record secrets or key values. If nothing in the steering files is affected, do nothing and do not mention this check. If you did update something, state which file and what changed in one sentence."
+      }
+    }
+  ]
+}

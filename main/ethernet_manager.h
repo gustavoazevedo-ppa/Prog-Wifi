@@ -3,7 +3,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-void ethernet_init(void);
+void ethernet_init(void); // no-op when ETHERNET_ENABLED is 0 in ethernet_manager.c
+bool ethernet_is_enabled(void);
 esp_netif_t *ethernet_get_netif(void);
 
 // Physical link state. Returns true when the link is up; then *speed_mbps (10 or 100)

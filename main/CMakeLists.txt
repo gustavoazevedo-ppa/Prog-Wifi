@@ -9,6 +9,7 @@ idf_component_register(
         "log_server.c"
         "admin_api.c"
         "http_log.c"
+        "selector.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash

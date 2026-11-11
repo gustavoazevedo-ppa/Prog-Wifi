@@ -1,21 +1,19 @@
+---
+inclusion: always
+---
+
 # Building this firmware (ESP-IDF)
 
-This is an ESP-IDF **v5.4.4** project for the ESP32 (target: `modulo_wifi`).
+ESP-IDF **v5.4.4** project for the ESP32 (target: `modulo_wifi`). Host OS is Windows; use PowerShell syntax.
 
-> History: the project was previously on v5.4.1. When Kiro's bundled Espressif
-> extension (2.1.0 → 2.3.0) switched to the ESP-IDF Installation Manager (EIM),
-> it installed v5.4.4 at `C:\esp\v5.4.4` and could no longer cleanly select the
-> hand-managed 5.4.1 tree. We moved to 5.4.4 (same v5.4 bugfix line — no API
-> changes). The 5.4.1 tree at `C:\Users\gusta\esp\v5.4.1` is left in place but
-> unused.
+## Rules
 
-## How to build
+- Always build through the repo scripts (`scripts\build.ps1` or `scripts\idf_env.ps1`).
+- Never use the stock `export.ps1`. It can auto-detect the wrong Python (the shell's Python or a Windows Store stub) and leave `idf.py` unavailable. The repo scripts pin the exact venv Python.
+- Run a build after any change to `main\*.c`, `components\`, or `CMakeLists.txt` files before reporting the work as done.
+- Treat the IDF version as fixed at v5.4.4. Do not point tooling at the old v5.4.1 tree (`C:\Users\gusta\esp\v5.4.1`); it is kept on disk but unused.
 
-Do NOT use the stock `export.ps1` — it can fail on this machine by auto-detecting
-the shell's Python and/or a Windows Store Python stub, leaving `idf.py`
-unavailable. The repo scripts pin the exact venv python instead.
-
-Use the repo scripts instead:
+## Commands
 
 ```powershell
 # Build (activates IDF env, then runs idf.py build):
@@ -30,22 +28,22 @@ Use the repo scripts instead:
 idf.py build
 ```
 
-## Known-good environment (as of this writing)
-
-- IDF framework: `C:\esp\v5.4.4\esp-idf` (installed by EIM)
-- IDF tools + venvs: `C:\Espressif` (set `IDF_TOOLS_PATH` to this)
-- Working venv python: `C:\Espressif\python_env\idf5.4_py3.12_env\Scripts\python.exe`
-  (note: the 5.4.4 EIM install uses **Python 3.12**, not 3.11)
-- Activation trick: run `idf_tools.py export --format key-value` with the venv
-  python above and import the emitted `KEY=VALUE` lines. `scripts\idf_env.ps1`
-  does exactly this. A harmless "unsupported cmake 4.1.1 in PATH" warning on
-  stderr can be ignored — IDF prepends its own cmake 3.30.2.
-
-If paths change (IDF reinstalled, new venv), update the three variables at the
-top of `scripts\idf_env.ps1`.
+`flash monitor` is interactive and long-running. Do not run it in a blocking shell; ask the user to run it.
 
 ## Verifying a change compiles
 
-A successful `idf.py build` ends with `Project build complete.` and produces
-`build\modulo_wifi.bin`. The build compiles `main\*.c` including
-`monip_client.c` (the MONIP/DC-09 receiver client).
+A successful build ends with `Project build complete.` and produces `build\prog_wifi.bin`. Confirm both before claiming success.
+
+## Known-good environment
+
+- IDF framework: `C:\esp\v5.4.4\esp-idf` (installed by the ESP-IDF Installation Manager, EIM)
+- IDF tools + venvs: `C:\Espressif` (`IDF_TOOLS_PATH`)
+- Venv Python: `C:\Espressif\python_env\idf5.4_py3.12_env\Scripts\python.exe` (Python **3.12**, not 3.11)
+- `scripts\idf_env.ps1` runs `idf_tools.py export --format key-value` with that venv Python and imports the emitted `KEY=VALUE` lines.
+- An "unsupported cmake 4.1.1 in PATH" warning on stderr is harmless. IDF prepends its own cmake 3.30.2.
+
+If paths change (IDF reinstalled, new venv), update the three variables at the top of `scripts\idf_env.ps1`.
+
+## History
+
+The project was on v5.4.1 until Kiro's Espressif extension (2.1.0 → 2.3.0) switched to EIM, which installed v5.4.4 at `C:\esp\v5.4.4` and could no longer cleanly select the hand-managed 5.4.1 tree. v5.4.4 is the same v5.4 bugfix line, with no API changes.

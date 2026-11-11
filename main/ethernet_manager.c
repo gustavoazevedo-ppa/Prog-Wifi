@@ -10,6 +10,8 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 
+#define ETHERNET_ENABLED 0 // 1 = Ethernet on, 0 = Ethernet disabled (driver never started, Wi-Fi only)
+
 #define CONFIG_EXAMPLE_ENC28J60_SPI_HOST 2
 #define CONFIG_EXAMPLE_ENC28J60_SCLK_GPIO 18
 #define CONFIG_EXAMPLE_ENC28J60_MOSI_GPIO 23
@@ -70,8 +72,19 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 // Ethernet initialization function
+bool ethernet_is_enabled(void)
+{
+    return ETHERNET_ENABLED != 0;
+}
+
 void ethernet_init(void)
 {
+    if (!ETHERNET_ENABLED)
+    {
+        ESP_LOGW(TAG, "Ethernet disabled (ETHERNET_ENABLED=0): driver not started");
+        return;
+    }
+
     eth_event_group = xEventGroupCreate();
 
     ESP_ERROR_CHECK(gpio_install_isr_service(0));

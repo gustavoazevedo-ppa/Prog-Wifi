@@ -20,6 +20,7 @@
 #include "ota_button.h"
 #include "preset_server.h"
 #include "log_server.h"
+#include "selector.h"
 #include "esp_ota_ops.h"
 
 #define TAG "APP"
@@ -101,6 +102,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     // Initialize Ethernet early — DHCP needs time to complete
+    // (no-op when ETHERNET_ENABLED is 0 in ethernet_manager.c)
     ethernet_init();
 
     // Configure status LEDs and blink to signal boot (visual restart indicator).
@@ -125,6 +127,9 @@ void app_main(void)
 
     // Read-only remote log console (TCP port 2323)
     log_server_start();
+
+    // Selector LCD (UART2): shows IP / MAC pages
+    selector_start();
 
     // Mark firmware as valid — rollback protection.
     // This is done only after the HTTP server is up: since updates can now be pushed
