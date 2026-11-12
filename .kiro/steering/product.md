@@ -7,7 +7,7 @@ Firmware for the **Modulo WiFi Infinity S** ("Prog"), an ESP32 network module. P
 - Receives commands over HTTP on the local network (Wi-Fi station and Ethernet via ENC28J60, independently).
 - Is driven by the **Stinger**, a custom ERP on TOTVS Protheus (ADVPL). The Stinger sends `POST /iniciar` with product info and a base path. The Prog fetches a preset config file (with a fallback order), then the Stinger polls `GET /status` until the run ends.
 - Will run tests and diagnostics on a device under test through a proprietary UART protocol. The UART protocol is **not implemented yet**; actions are only logged for now.
-- May drive a "selector" (XMC1100 board with 16x2 LCD, 4 keys, buzzer) over UART as host, to show IP/MAC addresses and read keys. Not yet integrated.
+- May drive a "selector" (XMC1100 board with 16x2 LCD, 4 keys, buzzer) over UART as host, to show IP/MAC addresses and read keys. A basic display-only version is in (`selector` module, rotating IP/MAC pages); replies and keys are not handled yet.
 - Exposes admin endpoints (`/admin/*`), a static device-info page (`index.html`) and a read-only remote log console (TCP port 2323, opened on request for a limited window).
 - Updates itself via OTA from a button or remotely. Firmware images are pre-encrypted (RSA-3072 wrapped), served from a public S3 bucket.
 
@@ -21,6 +21,8 @@ Firmware for the **Modulo WiFi Infinity S** ("Prog"), an ESP32 network module. P
 - `docs/preset-api-spec.md`: preset / test start API (endpoints, payloads, auth, forgiving input rules).
 - `docs/stinger-api-iniciar-status.md`: `/iniciar` and `/status` details.
 - `docs/selector-protocol.md`: selector UART protocol (parts marked **[inferred]** or **[unverified]** need hardware confirmation).
+- `docs/selector-bridge-design.md`: design (not yet implemented) for bridging a central and the selector through both UARTs.
+- `docs/connect-protocol.md`: master-mode protocol toward the central (read / save config, encrypted variant), extracted from sources kept in another repo. Not implemented yet.
 - `docs/MA00476 - MODULO WIFI INFINITY S V1.3.pdf`, `docs/Novo Prog.pdf`: hardware manual and requirements.
 
 ## Language
