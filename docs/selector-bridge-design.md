@@ -51,7 +51,7 @@ Non-goals (for now)
 | 10 | The switch command is sent in place of a reply, and all master-mode traffic is strict half-duplex (some centrals are full-duplex, others are not): send, wait for the reply, never transmit while receiving. |
 | 11 | Frame layout exceptions (slightly different header and tail, minor field differences, plus an encrypted protocol variant) are handled with frame profiles. They are not implemented in phase 1. |
 | 12 | The first planned use of master mode is saving presets to the central at initialization. The central de-duplicates writes and does its own wear leveling, so repeated saves of the same content are not a concern. |
-| 13 | The Infos request (`'I'`, ID 2) is what puts the central in slave mode. Its reply bytes are not reliable and are not used to identify the central. Product identification comes from the splash text after the revert. |
+| 13 | The Infos request (`'I'`, ID 2) is what puts the central in slave mode. Its reply bytes are not reliable and are not used to identify the central. There is no reliable automatic identification: the splash text has no stable pattern either. The product comes from the Stinger (`produto` in `POST /iniciar`). |
 | 14 | Every dialect transmits stop byte `0x81` only. Receivers accept `0x81` and `0x51`. |
 | 15 | The ID byte distinguishes the dialects (1 = selector, 2 = connect). The framer accepts a set of IDs per role. |
 | 16 | The preset is an opaque block. The Stinger provides the right file per central. The Prog decodes it, computes its size, and sends it raw in an `R` frame. Any result code counts as success for now. No read before write. |
@@ -60,6 +60,8 @@ Non-goals (for now)
 | 19 | Out of scope: the central type `0xFF` GPIO-only mode, and TX backup / restore. |
 | 20 | The Prog menu is the default screen from boot. The central takes the screen on its first valid frame, and the menu returns after 3 s without one (section 7b). Navigation is manual with the arrow keys (`SEL` next, `OK` previous). |
 | 21 | The menu shows all interfaces enabled in the firmware, even when down (IP `0.0.0.0`, real MAC), after a project / version page. During master mode the selector shows `PROGRAMMING...`. |
+| 22 | The host port polls keys about every 40 ms and sends screens only on change plus a 1 s refresh. The selector has no no-host timeout, and measured data shows a 100 ms poll reports only 65% of quick presses. |
+| 23 | The key state given to the central is not latched: a tap shorter than the central's own poll is lost, as with a direct connection. Revisit after the real-central test (`docs/open-questions.md`, D6). |
 
 ## 3. Hardware
 
@@ -169,7 +171,9 @@ Mapping notes
 - `KEYS`: canonical bits `SELECTOR_KEY_MINUS`, `PLUS`, `OK`, `SEL` (pressed = 1). The wire is
   active-low (idle `0xB4 0xB4`). Data1 bit 7 is `OK` and bit 4 is `SEL`, confirmed on a real
   selector. On some selectors these two keys are labelled `<-` (OK) and `->` (SEL). The mapping
-  lives in one place in the codec. The pulse bits are not forwarded in this version.
+  lives in one place in the codec. The pulse bits are not forwarded: on a real selector they only
+  repeat the level (a "last edge" indicator, see `selector-protocol.md` section 4), and the
+  replies to the central are rebuilt with the idle pulse-bit pattern.
 - Messages are always re-encoded with stop `0x81`, even if the incoming frame used `0x51`.
 
 ### 5.4 Frame profiles (planned, not in phase 1)
@@ -205,8 +209,10 @@ typedef struct
     selector_role_t role;
     uint32_t partial_timeout_ms; // 25
     uint32_t link_timeout_ms;    // 500
-    uint32_t refresh_ms;         // host role: frame cadence, 100
-    uint32_t reply_timeout_ms;   // host role: wait for a reply, 80
+    uint32_t poll_ms;            // host role: key poll interval while the selector answers, 40
+    uint32_t down_poll_ms;       // host role: poll interval while it does not answer, 100
+    uint32_t refresh_ms;         // host role: resend the screen after this long unchanged, 1000
+    uint32_t reply_timeout_ms;   // host role: time allowed after the end of the host frame, 30
 } selector_port_cfg_t;
 ```
 
@@ -227,16 +233,28 @@ message interface. It does not touch the bridge or the translators.
 - Upstream `KEYS` messages from the bridge only update the cache. Nothing is sent
   unsolicited.
 - Unknown / malformed frames: no reply, count the drop.
+- A central with no selector sends its initial screen (model and firmware version) until a reply
+  arrives, then moves on to its menu after a short delay. Because this port replies to every valid
+  frame at once, the central proceeds even when the real selector is not connected to the Prog.
+  This is intended: the Prog keeps replying with idle keys while the selector link is down, so a
+  central can be tested without a selector.
 
 ### 6.2 Selector port (UART1, plays the host toward the real selector)
 
-Runs its own cadence, independent of the central.
+Runs its own schedule, independent of the central. One request at a time: the next frame goes out
+when the reply to the previous one is complete (or timed out) and its slot has come. A reply
+is expected `reply_timeout_ms` after the end of the host frame (the selector answers 3 to 4 ms
+after it, measured).
 
-- State DOWN: send `'?'` poll every `refresh_ms` until a valid reply arrives, then UP.
-- State UP: every `refresh_ms` send exactly one frame, in this priority:
+- State DOWN: send a `'?'` poll every `down_poll_ms` until a valid reply arrives, then UP.
+- State UP: a slot every `poll_ms`. The default frame is the `'?'` poll, because keys are only
+  reported in the reply to a screen or a poll, and the poll exchange is short (about 20 ms). Instead
+  of the poll, in this priority:
   1. a pending beep (`'B'`), then
   2. a changed backlight (`'L'`), then
-  3. the current screen (`'S'`, always the full 38-byte frame).
+  3. the screen (`'S'`, always the full 38-byte frame) when it changed since the last one sent,
+     or after `refresh_ms` without one. The selector has no no-host timeout, so the refresh is only
+     there to recover from errors.
 - Replies to `'S'` and `'?'` carry the key state; queue `KEYS` upstream when it changes (and
   once on link UP). Replies to `'B'` and `'L'` only count as link alive.
 - No valid reply for `link_timeout_ms` goes to DOWN. On return to UP, resend backlight and
@@ -263,11 +281,12 @@ SELECTOR -> SWITCHING -> MASTER -> WAIT_REVERT -> SELECTOR
 Rules
 - **No return command.** The central reverts by timeout only. The timeout is variable per
   product, mostly 500 to 1500 ms. It must be a per-product configuration value.
-- **Revert indicator:** the central sends a text frame with its product name and firmware
-  version (a screen frame, like the splash in `selector-protocol.md` section 5). When it
-  arrives, the port goes back to `SELECTOR`. The same text identifies the product and
-  version, so it can later select a profile.
-- **Wait limit:** `WAIT_REVERT` ends in failure if the splash does not arrive within the longest
+- **Revert indicator:** once back in master mode the central sends its initial screen (product
+  name and firmware version, an ordinary `'S'` frame) repeatedly until the selector replies. So the
+  first valid selector-dialect frame from the central is the sign that it has reverted. The text is
+  not parsed: it has no stable pattern across models and firmware. The port goes back to
+  `SELECTOR` and replies at once, as in 6.1.
+- **Wait limit:** `WAIT_REVERT` ends in failure if no valid frame arrives within the longest
   expected timeout (1500 ms) plus a margin (to be set once the timeouts are measured).
 - **Lease:** the slave-mode timeout varies by product (500 to 1500 ms). **[unverified]**: what
   resets it (any valid frame, or only some), and whether a request is needed in every session
@@ -464,12 +483,20 @@ Implementation notes (phase 1, built, not yet run on hardware):
 - Ports read one byte at a time with a 10 ms timeout, so a frame is handled as soon as its stop
   byte arrives and the reply to the central goes out right after it.
 - Timing defaults (in `selector_bridge.c`): partial frame timeout 25 ms, link timeout 500 ms, host
-  cadence 100 ms, reply timeout 80 ms.
+  key poll 40 ms (100 ms while the selector does not answer), screen refresh 1000 ms, reply
+  timeout 30 ms. The screen is sent only on change plus the refresh, since the selector keeps it on
+  forever; the poll is what samples the keys (see `selector-protocol.md` section 4 for why 40 ms).
 - `selector_bridge_get_stats()` returns the per-port counters (valid frames, drops per reason,
   queue-full drops, reply timeouts, link changes). Drops are also logged, at most once per
   second per port.
-- `selector_bridge_set_tap(true)` logs every valid frame in hex at INFO level on both ports
-  (tags `SEL_PANEL` and `SEL_HOST`). It is off by default and has no HTTP switch yet.
+- `selector_bridge_set_tap(true)` logs valid frames in hex at INFO level on both ports (tags
+  `SEL_PANEL` and `SEL_HOST`). A frame identical to the previous one in the same direction on the
+  same port is skipped, and the next different frame says how many repeats were skipped
+  (`TAP_CHANGES_ONLY` in `selector_port.c`, set it to 0 to log every frame). The default in
+  `selector_port.c` is currently on (`s_tap`), and there is no HTTP switch yet.
+- Observed on the bench with the tap: after the fixed-rate change the host replies arrive exactly
+  100 ms apart, a key reply is followed by the new menu screen about 40 ms later (within one
+  cycle), and the link stayed up with the screen unchanged for about 85 s (846 identical replies).
 - Ethernet is currently disabled in the firmware (`ETHERNET_ENABLED` is 0), so the menu has the
   project page and the Wi-Fi pages only.
 

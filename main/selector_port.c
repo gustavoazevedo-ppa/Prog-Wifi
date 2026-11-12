@@ -42,11 +42,27 @@ struct selector_port
     bool backlight_dirty;
     selector_msg_t beep;
     bool beep_pending;
+    bool screen_dirty;       // the screen changed (or the selector came back): send it
+    uint32_t screen_tx_ms;   // when the screen was last sent
     uint8_t last_keys;
     bool keys_known;
+
+    // Frame tap: last frame logged per direction (0 = RX, 1 = TX), to skip repeats
+    struct
+    {
+        uint8_t bytes[SELECTOR_MAX_FRAME];
+        uint8_t len;
+        uint32_t repeats; // identical frames skipped since it was logged
+    } tap_last[2];
+    uint32_t tap_gen;
 };
 
+// 1 = the tap logs a frame only when it differs from the previous one in the same direction
+// (the screen and the idle key replies repeat every 100 ms), 0 = log every frame
+#define TAP_CHANGES_ONLY 1
+
 static volatile bool s_tap = false;
+static volatile uint32_t s_tap_gen; // bumped each time the tap is turned on: forgets the last frames
 
 static uint32_t now_ms(void)
 {
@@ -55,15 +71,40 @@ static uint32_t now_ms(void)
 
 void selector_port_set_tap(bool on)
 {
+    if (on)
+    {
+        s_tap_gen++; // the first frame after turning the tap on is always shown
+    }
     s_tap = on;
 }
 
-static void port_tap(const selector_port_t *p, const char *dir, const uint8_t *buf, size_t len)
+// dir is "RX" or "TX"
+static void port_tap(selector_port_t *p, const char *dir, const uint8_t *buf, size_t len)
 {
     if (!s_tap)
     {
         return;
     }
+
+    uint32_t skipped = 0;
+#if TAP_CHANGES_ONLY
+    if (p->tap_gen != s_tap_gen)
+    {
+        memset(p->tap_last, 0, sizeof(p->tap_last));
+        p->tap_gen = s_tap_gen;
+    }
+    __typeof__(p->tap_last[0]) *last = &p->tap_last[dir[0] == 'T' ? 1 : 0];
+    if (last->len == len && memcmp(last->bytes, buf, len) == 0)
+    {
+        last->repeats++;
+        return;
+    }
+    skipped = last->repeats;
+    memcpy(last->bytes, buf, len);
+    last->len = (uint8_t)len;
+    last->repeats = 0;
+#endif
+
     char line[SELECTOR_MAX_FRAME * 3 + 1];
     size_t pos = 0;
     for (size_t i = 0; i < len && pos + 4 < sizeof(line); i++)
@@ -71,7 +112,14 @@ static void port_tap(const selector_port_t *p, const char *dir, const uint8_t *b
         pos += (size_t)snprintf(&line[pos], sizeof(line) - pos, "%02X ", buf[i]);
     }
     line[pos] = '\0';
-    ESP_LOGI(p->tag, "%s %s", dir, line);
+    if (skipped > 0)
+    {
+        ESP_LOGI(p->tag, "%s %s(the previous %s frame repeated %u more times)", dir, line, dir, (unsigned)skipped);
+    }
+    else
+    {
+        ESP_LOGI(p->tag, "%s %s", dir, line);
+    }
 }
 
 static esp_err_t port_uart_init(const selector_port_cfg_t *cfg)
@@ -269,7 +317,12 @@ static void host_drain(selector_port_t *p)
         switch (m.type)
         {
         case SELECTOR_MSG_SCREEN:
-            p->screen = m.u.screen;
+            // The central repeats its screen every 100 ms: only a change is worth a frame
+            if (!p->screen_valid || memcmp(&p->screen, &m.u.screen, sizeof(p->screen)) != 0)
+            {
+                p->screen = m.u.screen;
+                p->screen_dirty = true;
+            }
             p->screen_valid = true;
             break;
         case SELECTOR_MSG_BEEP:
@@ -287,33 +340,37 @@ static void host_drain(selector_port_t *p)
     }
 }
 
-// One frame per cycle, in priority order: beep, backlight, screen. While the selector is
-// not answering (or there is no screen yet) only the key poll is sent.
-static void host_send_next(selector_port_t *p)
+// Sends one frame and returns its length. Keys are only reported in the reply to a screen or a
+// poll, so the key poll is the default frame: a screen is sent only when it changed or has not
+// been sent for refresh_ms, and a beep or a new backlight level goes out first. While the
+// selector is not answering (or there is no screen yet) only the poll is sent.
+static size_t host_send_next(selector_port_t *p, uint32_t now)
 {
     selector_msg_t m;
     uint8_t out[SELECTOR_MAX_FRAME];
 
     memset(&m, 0, sizeof(m));
-    if (!p->link_up || !p->screen_valid)
+    m.type = SELECTOR_MSG_POLL;
+    if (p->link_up && p->screen_valid)
     {
-        m.type = SELECTOR_MSG_POLL;
-    }
-    else if (p->beep_pending)
-    {
-        m = p->beep;
-        p->beep_pending = false;
-    }
-    else if (p->backlight_dirty)
-    {
-        m.type = SELECTOR_MSG_BACKLIGHT;
-        m.u.backlight.level = p->backlight;
-        p->backlight_dirty = false;
-    }
-    else
-    {
-        m.type = SELECTOR_MSG_SCREEN;
-        m.u.screen = p->screen;
+        if (p->beep_pending)
+        {
+            m = p->beep;
+            p->beep_pending = false;
+        }
+        else if (p->backlight_dirty)
+        {
+            m.type = SELECTOR_MSG_BACKLIGHT;
+            m.u.backlight.level = p->backlight;
+            p->backlight_dirty = false;
+        }
+        else if (p->screen_dirty || (uint32_t)(now - p->screen_tx_ms) >= p->cfg.refresh_ms)
+        {
+            m.type = SELECTOR_MSG_SCREEN;
+            m.u.screen = p->screen;
+            p->screen_dirty = false;
+            p->screen_tx_ms = now;
+        }
     }
 
     size_t len = selector_encode(&m, out);
@@ -322,6 +379,7 @@ static void host_send_next(selector_port_t *p)
         uart_write_bytes(p->cfg.uart, (const char *)out, len);
         port_tap(p, "TX", out, len);
     }
+    return len;
 }
 
 static void host_handle_frame(selector_port_t *p, const selector_frame_t *frame, uint32_t now, bool *awaiting)
@@ -344,9 +402,10 @@ static void host_handle_frame(selector_port_t *p, const selector_frame_t *frame,
     if (!p->link_up)
     {
         port_set_link(p, true);
-        // The selector may have been reset or replugged: send the backlight again (the screen
-        // is resent on every cycle anyway) and report the key state once
+        // The selector may have been reset or replugged: send the backlight and the screen
+        // again and report the key state once
         p->backlight_dirty = p->backlight_set;
+        p->screen_dirty = true;
         p->keys_known = false;
     }
 
@@ -372,19 +431,29 @@ static void host_task(void *arg)
     uint8_t byte;
     bool awaiting = false;
     uint32_t deadline = 0;
-    uint32_t next_cycle = now_ms();
+    uint32_t next_slot = now_ms();
 
     while (1)
     {
         host_drain(p);
 
+        // One request at a time: the next frame goes out when the reply to the previous one
+        // is complete (or timed out) and its slot has come
         uint32_t now = now_ms();
-        if ((int32_t)(now - next_cycle) >= 0)
+        if (!awaiting && (int32_t)(now - next_slot) >= 0)
         {
-            next_cycle = now + p->cfg.refresh_ms;
-            host_send_next(p);
+            // Fixed rate: the loop wakes up to one tick late, so scheduling from "now" would
+            // stretch the period
+            uint32_t period = p->link_up ? p->cfg.poll_ms : p->cfg.down_poll_ms;
+            next_slot += period;
+            if ((int32_t)(now - next_slot) >= 0)
+            {
+                next_slot = now + period; // fell behind (a long screen frame): do not send a burst
+            }
+            size_t len = host_send_next(p, now);
+            uint32_t airtime_ms = (uint32_t)((len * 10 * 1000 + p->cfg.baud - 1) / p->cfg.baud);
             awaiting = true;
-            deadline = now + p->cfg.reply_timeout_ms;
+            deadline = now + airtime_ms + p->cfg.reply_timeout_ms;
         }
 
         int n = uart_read_bytes(p->cfg.uart, &byte, 1, pdMS_TO_TICKS(PORT_READ_TIMEOUT_MS));

@@ -172,11 +172,20 @@ Every reply echoes the function that was sent and always carries the key state:
 ```
 7E 08 01 <function> <Data0> <Data1> CHK 81
 ```
-- Reply to `'S'` is `'S'`, reply to `'?'` is `'?'` (per document; the alarm code
-  handles both identically).
+- Reply to `'S'` is `'S'`, reply to `'?'` is `'?'` (confirmed on a real selector, for example
+  `7E 08 01 3F B0 94 93 81`; the alarm code handles both identically).
 - This acts as an ACK for each command.
-- **[unverified]** Whether the selector ever sends frames unsolicited, and its
-  reply latency.
+- The selector sends nothing on its own. In a Saleae capture (`docs/digital.csv`, analysed with
+  `docs/analyze_selector_capture.py`) no reply followed anything but a host frame, and both lines
+  were silent for the first 7.8 s before the host started.
+- Reply latency, measured on that capture: the reply starts **2.9 to 4.2 ms** after the end of the
+  host frame (median 3.5 ms), for both `'S'` and `'?'`. A full `'S'` exchange takes about 51 ms
+  (39.6 ms frame, 3.5 ms, 8.3 ms reply) and a poll exchange about 20 ms. The bytes of a reply can
+  have gaps of up to about 200 µs (two bit times).
+- The selector has **no no-host timeout**: a screen stays on forever (project owner). A periodic
+  refresh is still worth doing to recover from errors or unexpected conditions.
+- After power-up the selector took about 0.32 s to answer the first poll (the first three polls
+  went unanswered); after a reset of the ESP32 alone it answered the first poll at once.
 - In the alarm code only `'S'` and `'?'` replies update the key state. Replies to
   `'B'` (and `'L'`) are accepted as "link alive" but their key bytes are ignored.
 
@@ -211,8 +220,49 @@ menus left is "yes / confirm / previous" and right is "no / next". So the same t
 keys are called OK / SEL or left / right depending on the selector variant. The ESP32 firmware
 uses the names `OK` and `SEL`, and its menu navigates with `SEL` (next) and `OK` (previous).
 
-Only the **level** bits are used by the alarm code. The pulse high/low bits may let the
-selector report a tap shorter than one poll interval **[unverified]**.
+Only the **level** bits are used by the alarm code.
+
+**Pulse bits, as observed on a real selector** (tap log of the ESP32 bridge with keys pressed
+and released at random; **[inferred]** from that log, not from the selector firmware). For each
+key the three bits (level, pulse low, pulse high) take these values:
+
+| State | Level | Pulse low | Pulse high | Example (`-` key, other keys idle) |
+|---|---|---|---|---|
+| Pressed | 0 | 1 | 0 | Data0 `54` |
+| Released, after an edge | 1 | 0 | 1 | Data0 `B4` (idle `B4 B4`) |
+| Released, no edge seen since the selector started | 1 | 0 | 0 | e.g. Data0 `B0`, Data1 `94` |
+
+- Examples of the other keys pressed: `+` gives Data0 `A8`, OK gives Data1 `54`, SEL gives
+  Data1 `88` or `A8` (depending on the OK pulse-high bit).
+- The pulse bits look like a "last edge" indicator (falling = pressed, rising = released), which
+  is redundant with the level bit. The third state shows up for a key that has not been pressed
+  and released since the selector powered up. It is the same on every power-up (seen on two
+  boots): `+` and OK start with pulse high 0 and `-` and SEL start with pulse high 1, so the first
+  replies after power-up are Data0 `B0` and Data1 `94` (reply `7E 08 01 3F B0 94 93 81` to the
+  first poll). Each key moves to the normal released state (`B4 B4`) after its first press and
+  release.
+- **Confirmed with the Saleae capture** (the key contacts were recorded next to the UART lines,
+  46 usable presses): every reply is one of the three states above, none of the 9 presses that fell
+  between two polls left any trace in the pulse bits, and no key ever went from "no edge seen" to
+  "released after an edge" without a pressed reply in between. The pulse bits do **not** latch a tap
+  that starts and ends between two polls.
+- Consequence: decoding from the level bits alone is correct. The ESP32 firmware ignores the
+  pulse bits and rebuilds replies for the central with the idle pulse-bit pattern.
+
+**How the selector samples the keys** (same capture, **[inferred]**):
+- It reads the keys shortly before it starts a reply: the reported state matches the physical contact
+  best about 10 to 13 ms before the start of the reply (anywhere from 0 to 25 ms before fits
+  almost as well).
+- A **press** is reported only after about 20 to 30 ms of continuous contact. A **release** is
+  reported at once: none of the samples taken after a release (including within 5 ms of it) still
+  read as pressed.
+- Presses in the capture ranged from 42 ms to 1.5 s. At the alarm's 100 ms poll, 30 of 46 presses
+  (65%) were reported: 9 fell between two polls and 7 were shorter than the press debounce at the
+  instant they were sampled. Presses of 150 ms or more were all reported (8 of 8). Under 100 ms,
+  18 of 32 (56%).
+- Modelled on these presses with a 20 to 30 ms press debounce: a key poll every 50 ms catches about
+  92 to 97%, every 33 ms about 97 to 99%. The model gives 63 to 71% at 100 ms, which agrees with
+  the 65% observed. The ESP32 bridge therefore polls keys about every 40 ms.
 
 ### Host-side debounce used by the alarm
 
@@ -417,7 +467,9 @@ a screen refresh) to be sampled, since key state only arrives in replies.
 ### Key handling
 
 - Keys are only sampled when a reply arrives (about 10 Hz if sending every 100 ms).
-  Taps shorter than the sample interval can be missed unless the pulse bits work.
+  Taps shorter than the sample interval can be missed; the pulse bits do not help (section 4). The
+  only remedy is to poll more often: a `'?'` poll exchange takes about 20 ms, so a poll every
+  30 to 50 ms fits easily between screens.
 - No key-up events from the selector; derive press/release/long-press on the ESP32 from
   successive samples.
 - Alarm autorepeat starts after about 800 ms of holding.

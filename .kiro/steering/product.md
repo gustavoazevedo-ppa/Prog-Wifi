@@ -22,6 +22,7 @@ Firmware for the **Modulo WiFi Infinity S** ("Prog"), an ESP32 network module. P
 - `docs/stinger-api-iniciar-status.md`: `/iniciar` and `/status` details.
 - `docs/selector-protocol.md`: selector UART protocol (parts marked **[inferred]** or **[unverified]** need hardware confirmation).
 - `docs/selector-bridge-design.md`: design and status of the selector bridge (phase 1 implemented; master mode is design only).
+- `docs/analyze_selector_capture.py` and `docs/digital.csv`: Saleae capture of the selector link (host, replies, key contacts) and the script that decodes it (frames, timing, key behavior).
 - `docs/open-questions.md`: every open question about the selector bridge and master mode (bench checks, central firmware team items, decisions), plus the resolved ones.
 - `docs/connect-protocol.md`: master-mode protocol toward the central (read / save config, encrypted variant), extracted from sources kept in another repo. Not implemented yet.
 - `docs/MA00476 - MODULO WIFI INFINITY S V1.3.pdf`, `docs/Novo Prog.pdf`: hardware manual and requirements.

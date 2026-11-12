@@ -37,8 +37,10 @@ Implementation status: not implemented. See `docs/selector-bridge-design.md` for
   the reply (or a timeout) before the next request. There is no minimum gap between commands.
   The 250 ms and 500 ms delays in the old code are arbitrary. **[owner]**
 - The central returns to master by a timeout only. There is no return command. The timeout varies
-  by product, mostly between 500 and 1500 ms. **[owner]** The first sign that it is back is a
-  screen frame with the product name and firmware version (the splash). **[owner]**
+  by product, mostly between 500 and 1500 ms. **[owner]** The first sign that it is back is its
+  initial screen (product name and firmware version, an ordinary selector `'S'` frame), which it
+  sends repeatedly until the selector replies. **[owner]** The text has no stable pattern across
+  models and firmware, so it is not parsed: the first valid selector-dialect frame is the signal.
 - **[unverified]** What resets the central's slave-mode timeout.
 - **[unverified]** Whether `'I'` is needed in every session before `'V'` or `'R'`, or only to
   enter slave mode.
@@ -133,7 +135,9 @@ spreadsheet]**
   protocol. **[owner]**
 - The four reply bytes are **not reliable**: several models return the same values. Do not use
   them to identify the model or firmware. Log them only. **[owner]**
-- Product identification comes from the splash frame text after the central reverts to master.
+- There is no reliable automatic identification of the model or firmware: neither the reply bytes
+  nor the splash text (no stable pattern) can be used. The product comes from the Stinger
+  (`produto` in `POST /iniciar`).
 
 ### `V` read config / `R` write config
 
@@ -174,8 +178,8 @@ for each central. The Prog downloads it, computes its size, and sends it raw. **
    reply. No valid reply within the timeout is a failure of the operation.
 4. Build `R`: `7E, Size = 6 + N, 02, 'R', <N bytes>, CKS, 81`, compute the checksum and send it.
 5. Wait for the 7-byte reply. Record the result byte. Any value counts as success for now.
-6. Go silent. The central reverts to master by timeout. Wait for the splash frame, up to the
-   longest expected timeout (1500 ms) plus a margin.
+6. Go silent. The central reverts to master by timeout. Wait for its first valid selector-dialect
+   frame (its initial screen), up to the longest expected timeout (1500 ms) plus a margin.
 
 If the variant is protected, apply the transform to each frame. Reading the central first is
 not needed. **[owner]** A read-back compare is optional later.
@@ -187,11 +191,12 @@ manually. **[owner]**
 
 1. Enter slave mode with the Infos request (step 3 above).
 2. Send `V`, read the reply, and take the data field (N bytes) as the block.
-3. Go silent and wait for the revert, and record the splash text (product name and firmware
-   version) as the provenance of the file.
+3. Go silent and wait for the revert (the central's first valid frame). The text of that first
+   screen can be kept as free text, for the operator to read, as provenance of the file. It is
+   not parsed.
 4. Expose the result as uppercase hex without separators, the same form as the preset files, so
    a captured file can be fed back into the save operation (round trip). Include the length,
-   the CRC-32 and the splash text next to it.
+   the CRC-32 and the first screen text next to it.
 
 Proposed endpoints, in the style of the existing admin endpoints (`docs/preset-api-spec.md`):
 

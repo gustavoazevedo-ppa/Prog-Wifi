@@ -65,8 +65,11 @@ typedef struct
     uint32_t baud;
     uint32_t partial_timeout_ms;
     uint32_t link_timeout_ms;
-    uint32_t refresh_ms;       // host role: frame cadence
-    uint32_t reply_timeout_ms; // host role: how long to wait for a reply
+    uint32_t poll_ms;          // host role: key poll interval while the selector answers
+    uint32_t down_poll_ms;     // host role: poll interval while the selector does not answer
+    uint32_t refresh_ms;       // host role: resend the screen after this long without a change
+    uint32_t reply_timeout_ms; // host role: time allowed, after the end of the host frame,
+                               // for the reply to complete
     QueueHandle_t to_bridge;   // selector_evt_t, written by the port
     QueueHandle_t from_bridge; // selector_msg_t, read by the port
 } selector_port_cfg_t;
@@ -78,7 +81,9 @@ selector_port_t *selector_port_start(const selector_port_cfg_t *cfg);
 
 void selector_port_get_stats(const selector_port_t *port, selector_port_stats_t *out);
 
-// Logs every valid frame (hex, INFO level) on all ports while enabled. Off by default.
+// Logs valid frames (hex, INFO level) on all ports while enabled. A frame identical to the
+// previous one in the same direction on the same port is skipped, and the next different frame
+// says how many repeats were skipped (TAP_CHANGES_ONLY in selector_port.c).
 void selector_port_set_tap(bool on);
 
 #endif // SELECTOR_PORT_H

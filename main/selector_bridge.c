@@ -23,8 +23,13 @@
 
 #define PARTIAL_TIMEOUT_MS 25
 #define LINK_TIMEOUT_MS 500
-#define REFRESH_MS 100
-#define REPLY_TIMEOUT_MS 80
+// Host side. The selector has no no-host timeout (a screen stays on forever), so screens are only
+// sent on change plus a slow refresh; keys are sampled by a poll about every POLL_MS because a
+// press needs ~20-30 ms of contact and shorter intervals catch most quick taps (measured).
+#define POLL_MS 40
+#define DOWN_POLL_MS 100
+#define REFRESH_MS 1000
+#define REPLY_TIMEOUT_MS 30 // measured: the reply starts 3-4 ms after the frame and takes 8 ms
 
 #define BRIDGE_TASK_STACK 4096
 #define BRIDGE_TASK_PRIO 4
@@ -177,6 +182,8 @@ bool selector_bridge_start(const selector_translator_t *translator)
         .baud = SELECTOR_BAUD,
         .partial_timeout_ms = PARTIAL_TIMEOUT_MS,
         .link_timeout_ms = LINK_TIMEOUT_MS,
+        .poll_ms = 0,
+        .down_poll_ms = 0,
         .refresh_ms = 0,
         .reply_timeout_ms = 0,
         .to_bridge = s_bridge_in,
@@ -190,6 +197,8 @@ bool selector_bridge_start(const selector_translator_t *translator)
         .baud = SELECTOR_BAUD,
         .partial_timeout_ms = PARTIAL_TIMEOUT_MS,
         .link_timeout_ms = LINK_TIMEOUT_MS,
+        .poll_ms = POLL_MS,
+        .down_poll_ms = DOWN_POLL_MS,
         .refresh_ms = REFRESH_MS,
         .reply_timeout_ms = REPLY_TIMEOUT_MS,
         .to_bridge = s_bridge_in,

@@ -54,7 +54,8 @@ bool selector_bridge_start(const selector_translator_t *translator);
 
 void selector_bridge_get_stats(selector_bridge_stats_t *out);
 
-// Logs every valid frame on both ports (hex, INFO level). Off by default.
+// Logs valid frames on both ports (hex, INFO level), skipping a frame that repeats the previous
+// one in the same direction.
 void selector_bridge_set_tap(bool on);
 
 #endif // SELECTOR_BRIDGE_H
