@@ -10,8 +10,9 @@ The master-mode ("connect") protocol is specified in `docs/connect-protocol.md`.
 from the original source files (current protocol with an encrypted variant, the discontinued
 protocol, and the encoder / decoder), which are kept in another repository.
 
-Status: design only. Nothing in this document is implemented yet. The current
-`main/selector.c` is a throwaway hardware test and is replaced by this design.
+Status: phase 1 (sections 5 to 8, 7b, 9 and 10) is implemented in `main/selector_*.c` and builds
+cleanly. It has not been tested on hardware yet. The master-mode parts (5.4 frame profiles, 6.3,
+7a) are design only. The old throwaway `main/selector.c` test was removed.
 
 ---
 
@@ -57,7 +58,7 @@ Non-goals (for now)
 | 17 | The encrypted variant is `byte ^ checksum ^ 0xAA` over ID, Function, Data and Counter (verified against `PROTECT.c`). It is implemented as a frame profile transform, later. |
 | 18 | A later admin action reads the configuration from a reference central and returns it as hex, the source of the preset files. |
 | 19 | Out of scope: the central type `0xFF` GPIO-only mode, and TX backup / restore. |
-| 20 | The Prog menu is the default screen from boot. The central takes the screen on its first valid frame, and the menu returns after 3 s without one (section 7b). Navigation is manual with PLUS / MINUS. |
+| 20 | The Prog menu is the default screen from boot. The central takes the screen on its first valid frame, and the menu returns after 3 s without one (section 7b). Navigation is manual with the arrow keys (`SEL` next, `OK` previous). |
 | 21 | The menu shows all interfaces enabled in the firmware, even when down (IP `0.0.0.0`, real MAC), after a project / version page. During master mode the selector shows `PROGRAMMING...`. |
 
 ## 3. Hardware
@@ -70,7 +71,8 @@ Non-goals (for now)
 
 - UART1 defaults to the flash pins, so it is always remapped with `uart_set_pin()`.
 - 10k pull-up to 3.3V on both RX lines (GPIO26, GPIO16). Shared ground. 3.3V on both sides.
-- GPIO16/17 are PSRAM pins on WROVER modules. Confirm the module is not a WROVER.
+- GPIO16/17 are PSRAM pins on WROVER modules. The module is an ESP32-WROOM-32D (no PSRAM), so
+  they are free.
 
 ## 4. Architecture
 
@@ -129,7 +131,8 @@ Rules (avoids the alarm parser's hazards from `selector-protocol.md` section 5):
 - The framer never waits for a size it cannot hold.
 
 Drop reasons: `BAD_SIZE`, `BAD_STOP`, `BAD_CHECKSUM`, `BAD_ID`, `BAD_LENGTH`
-(wrong length for the function), `UNKNOWN_FUNCTION`, `PARTIAL_TIMEOUT`, `OVERFLOW`.
+(wrong length for the function), `UNKNOWN_FUNCTION`, `PARTIAL_TIMEOUT`. A buffer overflow cannot
+happen: the size check bounds the buffer.
 
 ### 5.3 Messages
 
@@ -164,8 +167,9 @@ Mapping notes
   writes its characters from the start and leaves the rest unchanged. **[unverified]**
   whether the real selector clears the rest instead; confirm on hardware and adjust.
 - `KEYS`: canonical bits `SELECTOR_KEY_MINUS`, `PLUS`, `OK`, `SEL` (pressed = 1). The wire is
-  active-low (idle `0xB4 0xB4`). The Data1 mapping (OK vs SEL) is **[unverified]** and lives in
-  one table in the codec. The pulse bits are not forwarded in this version.
+  active-low (idle `0xB4 0xB4`). Data1 bit 7 is `OK` and bit 4 is `SEL`, confirmed on a real
+  selector. On some selectors these two keys are labelled `<-` (OK) and `->` (SEL). The mapping
+  lives in one place in the codec. The pulse bits are not forwarded in this version.
 - Messages are always re-encoded with stop `0x81`, even if the incoming frame used `0x51`.
 
 ### 5.4 Frame profiles (planned, not in phase 1)
@@ -288,7 +292,7 @@ typedef struct
     void *ctx;
     void (*on_msg)(void *ctx, selector_dir_t dir, const selector_msg_t *msg);
     void (*on_link)(void *ctx, selector_side_t side, bool up);
-    void (*on_mode)(void *ctx, selector_role_t central_role); // planned: master mode, see 6.3
+    void (*on_mode)(void *ctx, bool central_slave); // planned: master mode, see 6.3
     void (*on_tick)(void *ctx, uint32_t now_ms);   // every ~10 ms
 } selector_translator_t;
 
@@ -364,9 +368,9 @@ Transitions
 
 ### Key handling
 
-- In `MENU`, rising edges of PLUS and MINUS navigate: PLUS goes to the next page, MINUS to the
-  previous, wrapping at both ends. Other keys are ignored. There is no auto-rotation. The
-  mapping of OK and SEL is unverified and is not used.
+- In `MENU`, rising edges of `SEL` (`->`, right arrow) and `OK` (`<-`, left arrow) navigate: `SEL`
+  goes to the next page, `OK` to the previous, wrapping at both ends. Other keys, including
+  PLUS and MINUS, are ignored. There is no auto-rotation.
 - On entering `MENU` the translator sends an idle `KEYS` upstream once, so the panel port's cached
   key state is idle while the central is silent.
 - **Hand-back:** on `MENU` or `STATUS` to `CENTRAL`, any key that is still held is masked
@@ -376,11 +380,11 @@ Transitions
 ### Pages
 
 1. **Project page.** Line 1 is the CMake project name, read at runtime from the app description,
-   in uppercase (`PROG_WIFI`). Line 2 is `<firmware version> HW<n>`, for example `V1.0.1 HW2`, using
-   the firmware version from the app description (the same value `/info` reports) and
-   `HW_VERSION` from `device_info.h`. If it does not fit in 16 characters, the version is
-   truncated and the `HW<n>` suffix is kept. The underscore may not render on the selector's
-   display. If so, use a space.
+   in uppercase (`PROG_WIFI`). Line 2 is `V<firmware version> HW<n>`, for example `V1.0.0 HW2`,
+   using the firmware version from the app description (the same value `/info` reports, with a
+   `V` added when it starts with a digit) and `HW_VERSION` from `device_info.h`. If it does not fit in 16 characters, the version is
+   truncated and the `HW<n>` suffix is kept. The underscore renders correctly on the
+   selector's display (checked on the bench).
 2. **One IP page and one MAC page per interface enabled in the firmware**, in this order: WIFI IP,
    WIFI MAC, ETH IP, ETH MAC. Line 1 is the label (`WIFI IP`, `WIFI MAC`, `ETH IP`, `ETH MAC`) and
    line 2 is the value, with no page indicator.
@@ -388,9 +392,11 @@ Transitions
      true. A disabled interface has no pages.
    - An interface that is enabled but down or without an address shows IP `0.0.0.0`.
    - The MAC is shown in full, as 12 hex digits without colons (17 characters with colons do not
-     fit in 16 columns). It comes from the chip MAC (`esp_read_mac`) so it is correct even when
-     the interface is down or its netif is missing. **To verify when implementing:** the Ethernet
-     manager must use the same MAC for the ENC28J60.
+     fit in 16 columns). It comes from the chip, not from the netif, so it is correct even when
+     the interface is down or its netif is missing: `esp_read_mac(ESP_MAC_WIFI_STA)` for Wi-Fi and
+     `ethernet_get_mac()` for Ethernet. The Ethernet manager derives the ENC28J60 MAC from the
+     eFuse MAC (first byte `0x02`), and `ethernet_get_mac()` exposes exactly that derivation, which
+     `ethernet_init()` now uses too.
    - If no interface is enabled, only the project page exists.
 
 The IP is read from the netif at a slow rate (for example every 500 ms) and the screen is
@@ -436,8 +442,8 @@ dropped and counted, and the ports never block on the bridge.
 - Files to add to `SRCS` in `main/CMakeLists.txt`: `selector_wire.c`, `selector_port.c`,
   `selector_bridge.c`, `selector_keys.c`, `selector_tr_menu.c`. `driver` is already needed for
   UART, and the menu needs `esp_netif`, `esp_app_format` (app description) and `esp_system` (MAC).
-- `selector.c` is removed once the menu translator replaces it. Its checksum and frame
-  builder move into the wire layer.
+- `selector.c` / `selector.h` were removed. The checksum and the frame builder moved into the
+  wire layer.
 - Gating of key injection into the central (refuse while a test run is active, authenticate the
   HTTP path) is the caller's responsibility when a translator action is triggered from HTTP.
   It is not part of this core.
@@ -451,10 +457,26 @@ dropped and counted, and the ports never block on the bridge.
 4. Drop statistics and tap.
 5. Key helper (edge detection) and the Prog menu translator (section 7b) replacing `selector.c`.
 
+Implementation notes (phase 1, built, not yet run on hardware):
+- Files: `selector_wire`, `selector_keys` (pure C), `selector_port`, `selector_bridge`,
+  `selector_tr_menu`. The wire layer has a self-test (checksum vector and a poll frame round trip)
+  that runs at start.
+- Ports read one byte at a time with a 10 ms timeout, so a frame is handled as soon as its stop
+  byte arrives and the reply to the central goes out right after it.
+- Timing defaults (in `selector_bridge.c`): partial frame timeout 25 ms, link timeout 500 ms, host
+  cadence 100 ms, reply timeout 80 ms.
+- `selector_bridge_get_stats()` returns the per-port counters (valid frames, drops per reason,
+  queue-full drops, reply timeouts, link changes). Drops are also logged, at most once per
+  second per port.
+- `selector_bridge_set_tap(true)` logs every valid frame in hex at INFO level on both ports
+  (tags `SEL_PANEL` and `SEL_HOST`). It is off by default and has no HTTP switch yet.
+- Ethernet is currently disabled in the firmware (`ETHERNET_ENABLED` is 0), so the menu has the
+  project page and the Wi-Fi pages only.
+
 Acceptance (on the bench, real central and real selector):
 - At boot the selector shows the Prog menu. The first central frame replaces it immediately.
   After 3 s without central frames the menu returns on its first page.
-- PLUS and MINUS navigate the pages with wrap-around. Disabled interfaces have no pages. A down
+- `SEL` and `OK` (the arrow keys) navigate the pages with wrap-around. Disabled interfaces have no pages. A down
   interface shows `0.0.0.0` and its MAC.
 - A key held while the central takes the screen back does not reach the central until released.
 - Screens and key presses behave exactly as with the central wired directly to the selector.
@@ -465,28 +487,12 @@ Acceptance (on the bench, real central and real selector):
   reconnect (screen redrawn after the selector returns).
 - The project builds with `.\scripts\build.ps1`.
 
-## 11. Open items (confirm on hardware, using the tap)
+## 11. Open items
 
-1. Meaning of the pulse bits and whether short taps are lost between polls.
-2. Reply latency of the real selector, and any no-host timeout.
-3. Behavior of a short `'S'` frame (clears the rest of the screen or not).
-4. Data1 key mapping (OK vs SEL).
-5. Whether the selector ever sends frames unsolicited.
-6. Which functions each product's central actually sends (`'?'`, `'B'`, `'L'`) and its reply deadline.
-7. Whether the central tolerates the Prog answering with its cached keys (about one refresh
-   cycle old) instead of live key state.
-8. The ESP32 module type (WROVER would conflict with GPIO16/17).
-9. Whether the underscore in `PROG_WIFI` renders on the selector's display.
-10. That the Ethernet manager uses the chip MAC (`esp_read_mac`) for the ENC28J60.
+All open questions, for the selector side, the central side and master mode, are kept in
+`docs/open-questions.md`, with the resolved ones.
 
 ## 12. Master-mode protocol
 
-Analysed and written up in `docs/connect-protocol.md`. Open items from that analysis, to settle on
-the bench or with the central firmware team:
-
-1. Values of the `R` result byte (any value counts as success for now).
-2. Whether the Infos request is needed in every session before `V` / `R`.
-3. What resets the central's slave-mode timeout.
-4. The format of the 2 KB preset extension.
-5. Whether the splash text has a stable pattern across models and firmware.
-6. How the Prog picks the plain or the protected variant for a given central.
+Analysed and written up in `docs/connect-protocol.md`. Its open items are in
+`docs/open-questions.md` (section C).

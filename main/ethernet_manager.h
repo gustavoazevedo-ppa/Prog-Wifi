@@ -7,6 +7,10 @@ void ethernet_init(void); // no-op when ETHERNET_ENABLED is 0 in ethernet_manage
 bool ethernet_is_enabled(void);
 esp_netif_t *ethernet_get_netif(void);
 
+// The MAC address used by the ENC28J60, derived from the eFuse MAC. Available even when
+// Ethernet is disabled or the link is down.
+void ethernet_get_mac(uint8_t mac[6]);
+
 // Physical link state. Returns true when the link is up; then *speed_mbps (10 or 100)
 // and *full_duplex are filled in (either pointer may be NULL). When the link is down
 // (or the driver is not installed) returns false and leaves the outputs untouched.

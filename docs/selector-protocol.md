@@ -197,21 +197,19 @@ Data0 (consistent between code, header and document):
 | 2 | Key `+` pulse high |
 | 1:0 | unused |
 
-Data1 — **the sources disagree on which key is which**:
+Data1 — **confirmed on a real selector** (by the project owner): the header struct
+(`UART_KEY_Type`) is right and the Word document has the two names swapped.
 
-| Bits | Header struct (`UART_KEY_Type`) | Word document |
+| Bits | Key | Label on the board |
 |---|---|---|
-| 7 (level), 6, 5 | `OK` | `SEL` |
-| 4 (level), 3, 2 | `SEL` | `OK` |
-| 1:0 | unused | unused |
+| 7 (level), 6, 5 | `OK` | `OK`, or `<-` (left arrow) on some selectors |
+| 4 (level), 3, 2 | `SEL` | `SEL`, or `->` (right arrow) on some selectors |
+| 1:0 | unused | |
 
-The alarm code calls Data1 bit 7 "left" and bit 4 "right". Its menu text suggests
-bit 7 (left) is the "yes / confirm" key and bit 4 (right) is "no / next":
-`"[ZONA 1]:(S) (N)"` is answered with left = S (sim), right = N (nao), and in the
-status screen right goes to the next menu and left to the previous one. That favours
-the header's naming (bit 7 = OK, bit 4 = SEL). **[unverified]**: confirm by pressing
-the physical keys and reading the bits, and by checking the labels printed on the
-selector board.
+This agrees with the alarm code, which calls Data1 bit 7 "left" and bit 4 "right": in its
+menus left is "yes / confirm / previous" and right is "no / next". So the same two physical
+keys are called OK / SEL or left / right depending on the selector variant. The ESP32 firmware
+uses the names `OK` and `SEL`, and its menu navigates with `SEL` (next) and `OK` (previous).
 
 Only the **level** bits are used by the alarm code. The pulse high/low bits may let the
 selector report a tap shorter than one poll interval **[unverified]**.
@@ -322,8 +320,8 @@ For the ESP32, format the text with `snprintf` into a 16-char buffer and pad to 
 
 ## 7. Inconsistencies in the source
 
-- **Data1 key naming** differs between the header struct and the Word document
-  (section 4).
+- **Data1 key naming** differs between the header struct and the Word document. Resolved:
+  the header struct is right (section 4).
 - **Splash length:** the constant `PROG_STATUS_INIT = 8` actually yields about 10
   splash frames because of the `stateCount++ > 8` post-increment test.
 - **Header structs are not wire layouts.** `UART_HEAD_Type` uses `enum` fields for ID
@@ -350,21 +348,16 @@ For the ESP32, format the text with `snprintf` into a 16-char buffer and pad to 
 
 ## 8. Still unknown / to find out
 
-1. ~~Baud rate and serial format~~ — resolved: **9600 baud, 8N1** (confirmed on the
-   alarm project, see section 2).
-2. XMC1100 selector firmware: reply timing, USIC receive FIFO depth, any watchdog or
-   no-host timeout, whether short `'S'` frames clear the rest of the screen, whether pulse bits allow
-   sub-poll-interval taps, whether `'L'` is implemented, which Data1 key is which.
-3. Whether the selector can send key frames unsolicited.
-4. Whether the tick in the alarm is really 1 ms (the constants are commented as ms).
-5. How `UART_Transmit()` behaves in the alarm (blocking, interrupt or DMA); it matters
-   only to understand how back-to-back frames were tolerated on the selector side.
+Resolved: **9600 baud, 8N1** (confirmed on the alarm project, see section 2).
+
+The rest (selector firmware behavior, key mapping, pulse bits, unsolicited frames, and the alarm
+reference details) is tracked in `docs/open-questions.md`, section A.
 
 ---
 
 ## 9. Hardware link (ESP32 <-> selector)
 
-### ESP32 pins (proposed)
+### ESP32 pins (final, as built)
 
 | Peripheral | Use | Pins |
 |---|---|---|

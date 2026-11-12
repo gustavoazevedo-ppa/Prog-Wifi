@@ -30,7 +30,10 @@ build/                  Build output (generated)
 | `admin_api` | `/admin/*` endpoints, registered on the same httpd server |
 | `http_log` | Request logging wrappers around `esp_http_server` |
 | `log_server` | Read-only TCP log console (port 2323), opened for a limited window on request |
-| `selector` | Selector LCD host on UART2 (GPIO17 TX, GPIO16 RX): rotating Wi-Fi / Ethernet IP and MAC pages |
+| `selector_wire`, `selector_keys` | Selector protocol framer / codec and key edge helper (pure C, no ESP-IDF dependency) |
+| `selector_port` | One UART per instance: UART2 plays the selector toward the central (GPIO17 TX, GPIO16 RX), UART1 plays the host toward the real selector (GPIO25 TX, GPIO26 RX) |
+| `selector_bridge` | Queues, bridge task and translator contract; drop counters and frame tap |
+| `selector_tr_menu` | Translator: Prog menu (project / version, Wi-Fi / Ethernet IP and MAC pages) while the central is silent, central screens pass through otherwise |
 | `device_info.h` | Device identification constants |
 | `index.html` | Static device-info page, embedded in flash |
 | `ota_decrypt_priv.pem` | Embedded OTA decryption key (secret) |

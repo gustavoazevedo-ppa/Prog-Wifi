@@ -20,7 +20,8 @@
 #include "ota_button.h"
 #include "preset_server.h"
 #include "log_server.h"
-#include "selector.h"
+#include "selector_bridge.h"
+#include "selector_tr_menu.h"
 #include "esp_ota_ops.h"
 
 #define TAG "APP"
@@ -128,8 +129,9 @@ void app_main(void)
     // Read-only remote log console (TCP port 2323)
     log_server_start();
 
-    // Selector LCD (UART2): shows IP / MAC pages
-    selector_start();
+    // Selector bridge: UART2 faces the central, UART1 the real selector. The Prog menu
+    // (version, IP / MAC pages) shows while the central is silent. A failure only logs.
+    selector_bridge_start(selector_tr_menu());
 
     // Mark firmware as valid — rollback protection.
     // This is done only after the HTTP server is up: since updates can now be pushed

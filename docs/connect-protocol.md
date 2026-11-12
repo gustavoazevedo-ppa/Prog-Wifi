@@ -206,14 +206,7 @@ needs no file system.
 
 ## 5. Open items
 
-1. The values of the `R` result byte, and how an error is reported (any value is OK for now).
-2. Whether `'I'` is needed in every session before `V` / `R`.
-3. What resets the central's slave-mode timeout.
-4. The format of the 2 KB preset extension.
-5. Whether the splash text has a stable pattern across models and firmware.
-6. The TX backup / restore rows of the spreadsheet (out of scope for now).
-7. How the Prog learns whether to use the plain or the protected variant for a given central
-   (try plain, then protected, and remember it per central is the current guess).
+Tracked in `docs/open-questions.md` (section C), with the resolved ones.
 
 ---
 

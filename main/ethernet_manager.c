@@ -77,6 +77,14 @@ bool ethernet_is_enabled(void)
     return ETHERNET_ENABLED != 0;
 }
 
+void ethernet_get_mac(uint8_t mac[6])
+{
+    /* ENC28J60 doesn't burn any factory MAC address, we derive one from the ESP32's
+       unique eFuse MAC to ensure each device gets a distinct Ethernet address. */
+    esp_efuse_mac_get_default(mac);
+    mac[0] = 0x02; // locally administered, unicast
+}
+
 void ethernet_init(void)
 {
     if (!ETHERNET_ENABLED)
@@ -130,11 +138,8 @@ void ethernet_init(void)
     ESP_ERROR_CHECK(esp_eth_driver_install(&eth_config, &eth_handle));
     s_eth_handle = eth_handle;
 
-    /* ENC28J60 doesn't burn any factory MAC address, we derive one from the ESP32's
-       unique eFuse MAC to ensure each device gets a distinct Ethernet address. */
     uint8_t eth_mac[6];
-    esp_efuse_mac_get_default(eth_mac);
-    eth_mac[0] = 0x02; // locally administered, unicast
+    ethernet_get_mac(eth_mac);
     mac->set_addr(mac, eth_mac);
 
     // Create default Ethernet station (eth) network interface
