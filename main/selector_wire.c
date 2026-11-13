@@ -29,10 +29,11 @@ static void frame_begin(uint8_t *out, size_t len, uint8_t function)
     out[3] = function;
 }
 
-static size_t frame_finish(uint8_t *out, size_t len)
+// The checksum does not cover the stop byte, so both stop variants share it
+static size_t frame_finish(uint8_t *out, size_t len, uint8_t stop)
 {
     out[len - 2] = selector_checksum(out, len);
-    out[len - 1] = SELECTOR_STOP;
+    out[len - 1] = stop;
     return len;
 }
 
@@ -90,36 +91,37 @@ size_t selector_encode(const selector_msg_t *msg, uint8_t *out)
     case SELECTOR_MSG_SCREEN:
         frame_begin(out, SELECTOR_SCREEN_FRAME, SELECTOR_FUNC_SCREEN);
         memcpy(&out[4], msg->u.screen.row, SELECTOR_LCD_ROWS * SELECTOR_LCD_COLS);
-        return frame_finish(out, SELECTOR_SCREEN_FRAME);
+        return frame_finish(out, SELECTOR_SCREEN_FRAME, SELECTOR_STOP);
 
     case SELECTOR_MSG_POLL:
         frame_begin(out, 8, SELECTOR_FUNC_POLL);
         out[4] = SELECTOR_KEYS_IDLE_BYTE;
         out[5] = SELECTOR_KEYS_IDLE_BYTE;
-        return frame_finish(out, 8);
+        return frame_finish(out, 8, SELECTOR_STOP);
 
     case SELECTOR_MSG_BEEP:
         frame_begin(out, 9, SELECTOR_FUNC_BEEP);
         out[4] = msg->u.beep.on_ms;
         out[5] = msg->u.beep.off_ms;
         out[6] = msg->u.beep.count;
-        return frame_finish(out, 9);
+        return frame_finish(out, 9, SELECTOR_STOP);
 
     case SELECTOR_MSG_BACKLIGHT:
         frame_begin(out, 7, SELECTOR_FUNC_BACKLIGHT);
         out[4] = msg->u.backlight.level;
-        return frame_finish(out, 7);
+        return frame_finish(out, 7, SELECTOR_STOP);
 
     default:
         return 0;
     }
 }
 
-size_t selector_encode_reply(uint8_t function, uint8_t pressed, uint8_t *out)
+size_t selector_encode_reply(uint8_t function, uint8_t pressed, uint8_t stop, uint8_t *out)
 {
     frame_begin(out, SELECTOR_REPLY_FRAME, function);
     keys_to_wire(pressed, &out[4], &out[5]);
-    return frame_finish(out, SELECTOR_REPLY_FRAME);
+    // Only the two known stop bytes: anything else falls back to the default
+    return frame_finish(out, SELECTOR_REPLY_FRAME, stop == SELECTOR_STOP_ALT ? SELECTOR_STOP_ALT : SELECTOR_STOP);
 }
 
 selector_decode_result_t selector_decode(const selector_frame_t *frame, selector_dir_t dir,
@@ -234,6 +236,19 @@ bool selector_selftest(void)
         return false;
     }
     if (selector_encode(&poll, out) != sizeof(vec) || memcmp(out, vec, sizeof(vec)) != 0)
+    {
+        return false;
+    }
+
+    // Replies echo the stop byte of the frame they answer: same bytes, only the tail differs
+    uint8_t reply[SELECTOR_MAX_FRAME];
+    if (selector_encode_reply(SELECTOR_FUNC_POLL, 0, SELECTOR_STOP, reply) != sizeof(vec) ||
+        memcmp(reply, vec, sizeof(vec)) != 0)
+    {
+        return false;
+    }
+    if (selector_encode_reply(SELECTOR_FUNC_POLL, 0, SELECTOR_STOP_ALT, reply) != sizeof(vec) ||
+        memcmp(reply, vec, sizeof(vec) - 1) != 0 || reply[sizeof(vec) - 1] != SELECTOR_STOP_ALT)
     {
         return false;
     }

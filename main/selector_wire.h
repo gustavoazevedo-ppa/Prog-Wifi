@@ -11,8 +11,8 @@
 #include <stdbool.h>
 
 #define SELECTOR_START 0x7E
-#define SELECTOR_STOP 0x81     // always sent; 0x51 is also accepted on receive
-#define SELECTOR_STOP_ALT 0x51
+#define SELECTOR_STOP 0x81     // the default tail
+#define SELECTOR_STOP_ALT 0x51 // legacy tail (decimal 81 by mistake), seen on some centrals in the field
 #define SELECTOR_ID 0x01
 
 #define SELECTOR_MIN_FRAME 6   // start, size, id, function, checksum, stop
@@ -144,7 +144,10 @@ selector_decode_result_t selector_decode(const selector_frame_t *frame, selector
 // SELECTOR_MAX_FRAME bytes. Returns the frame length, or 0 if the message is not encodable.
 size_t selector_encode(const selector_msg_t *msg, uint8_t *out);
 
-// Encodes the 8-byte reply to a command: the function echoed plus the key state.
-size_t selector_encode_reply(uint8_t function, uint8_t pressed, uint8_t *out);
+// Encodes the 8-byte reply to a command: the function echoed plus the key state. stop is the
+// last byte of the frame being answered (SELECTOR_STOP or SELECTOR_STOP_ALT): a central that
+// sends the legacy 0x51 tail needs the answer with 0x51. Any other value gives SELECTOR_STOP.
+// Frames the Prog originates (toward the real selector, which accepts both) always use SELECTOR_STOP.
+size_t selector_encode_reply(uint8_t function, uint8_t pressed, uint8_t stop, uint8_t *out);
 
 #endif // SELECTOR_WIRE_H

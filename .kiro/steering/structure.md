@@ -10,7 +10,7 @@ components/enc28j60/    Vendored, patched Ethernet driver (see enc28j60-vendored
 managed_components/     Downloaded by Component Manager; do not edit
 patches/                Numbered diffs of enc28j60 fixes + PR_DRAFTS.md
 scripts/                build.ps1, idf_env.ps1 (always build through these)
-docs/                   API specs, selector protocol, hardware PDFs
+docs/                   API specs, selector / connect protocols, bridge design, open questions, capture analysis script, hardware PDFs
 cert/                   AWS certificates and keys (secrets)
 build/                  Build output (generated)
 .kiro/steering/         Steering files

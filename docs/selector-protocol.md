@@ -53,7 +53,7 @@ takes about 40 ms and an 8-byte reply about 8.3 ms.
 | Function | ASCII letter, see section 3 |
 | Data | 0 to 249 bytes (document), depends on function |
 | Checksum | XOR of all bytes before it (Start..last Data), then complemented (`^ 0xFF`) |
-| Stop | `0x81` when sending; accept both `0x81` and `0x51` when receiving (see note) |
+| Stop | `0x81` by default; `0x51` on some devices. Accept both when receiving (see note) |
 
 **Note on the stop byte (history):** the intended value is `0x81`, the bit-flipped
 version of the start byte `0x7E` (`0111 1110` becomes `1000 0001`). Some programmers
@@ -62,8 +62,11 @@ only after thousands of products were already in the field. Since those units ca
 fixed, receivers accept both values as the end of a frame (the alarm parser does the
 same, `UART_STOP` and `UART_STOP2`). For the ESP32:
 - **Receive:** accept `0x81` or `0x51` as the last byte.
-- **Send:** use `0x81` (the documented value, and the one the alarm sends to the
-  selector). Whether the selector would also accept `0x51` is unknown; do not rely on it.
+- **Send to the selector:** use `0x81` (the documented value, and the one the alarm sends to the
+  selector). The selector accepts both tails (confirmed by the project owner), so the Prog
+  does not mirror the central's tail on this side.
+- **Answer a central:** a central that sends the `0x51` tail needs the answer with `0x51`. The ESP32
+  panel port echoes, per frame, the tail of the frame it answers (`0x81` or `0x51`).
 - The checksum does not cover the stop byte, so both variants share the same checksum.
 
 Size examples: 3 data bytes → `4 + 3 + 2 = 9`; 2 data bytes → 8; 1 data byte → 7.

@@ -21,7 +21,7 @@
 ## Code conventions
 
 - Each module is a `.c`/`.h` pair in `main/` with a short purpose comment, a `#define TAG` for logging and `ESP_LOGx` for output (no `printf`).
-- Include guards in the form `NAME_H`. Public functions are prefixed by module (`wifi_`, `ethernet_`, `nvs_`, `ota_`, `preset_server_`, `log_server_`, `admin_api_`, `http_log_`).
+- Include guards in the form `NAME_H`. Public functions are prefixed by module (`wifi_`, `ethernet_`, `nvs_`, `ota_`, `preset_server_`, `log_server_`, `admin_api_`, `http_log_`, `selector_`).
 - Brace style: Allman (opening brace on its own line), 4-space indent.
 - HTTP handlers register through `http_log_register()` and use `http_log_set_status()` / `http_log_send_err()` instead of the raw `httpd_*` equivalents, so requests are logged.
 - Keep handler stacks small: long work goes to a separate task using the `http_log_async_*` helpers.

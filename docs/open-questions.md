@@ -31,6 +31,8 @@ off by default and has no HTTP switch yet (see D4).
 | ID | Question | Blocks | How |
 |---|---|---|---|
 | C1 | Which functions does each central send (`'?'`, `'B'`, `'L'`, short or full `'S'`), and what is its reply deadline? | Reply timing of the panel port, decode of unusual frames. | Tap on the UART2 side, per central model. |
+| C4 | Does a central that sends the `0x51` tail work through the bridge now that the panel port echoes the tail? Built, not yet tested on a real `0x51` central. | The tail echo (a capture of the central and of the Prog's reply would also show what the real selector answers when it is addressed with `0x51`). | Connect a `0x51` central, check the Saleae capture of UART2 and the menu. |
+| C5 | Is the 10 ms reply delay (`CENTRAL_REPLY_DELAY_MS`) right? It is longer than the real selector (3 to 4 ms) and was chosen for centrals that need a gap; the central's reply deadline is not measured. | Reply timing toward every central (too long may make a central time out, too short may be ignored). | Try it on each central family; measure the deadline with the Saleae (C1). |
 | C2 | Does the central tolerate replies built from cached keys, about 100 ms old, instead of live key state? | The whole decoupled design. | Operate the menus of a real central through the bridge. |
 
 ## C. Master mode (central firmware team, or a capture)
@@ -41,6 +43,7 @@ off by default and has no HTTP switch yet (see D4).
 | M2 | Is the Infos request needed in every session before `V` and `R`, or only to enter slave mode? | The save and read sequences. | Central firmware team, or try. |
 | M3 | What resets the central's slave-mode timeout (any valid frame, or only some)? And its value per product (500 to 1500 ms)? | Keepalive rules; the revert wait limit (1500 ms plus a margin). | Central firmware team. |
 | M4 | What is the format of the 2 KB preset extension (new command or extension of `R`, single or multiple frames)? | Anything above 249 bytes. | Central firmware team, in progress on their side. |
+| M11 | Does the same tail rule (use the tail of the central's own frames) hold for the protected variant (start byte `0x5A`)? | Master mode on protected centrals. | Central firmware team, or a capture. |
 | M6 | How does the Prog pick the plain or the protected variant for a given central? Current guess: try plain, then protected, and remember it. | Entering master mode on protected centrals. | Central firmware team, or per-model list. |
 | M7 | Is the preset file exactly the data field of `R`, with no header or checksum to strip? Assumed yes ("send it raw"). | Save preset. | Stinger side: compare a file with a `V` read from the same central. |
 | M8 | Are the `'C'` command numbers the same on every central, and does every central implement every command? | Commands from the Prog. | Central firmware team. |
@@ -81,7 +84,7 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 | S1: OK / SEL key mapping | Data1 bit 7 = `OK`, bit 4 = `SEL`, as in the header struct (the Word document had them swapped). Some selectors label them `<-` (OK) and `->` (SEL). The menu navigates with them |
 | Ethernet MAC on the menu | Same derivation as the Ethernet manager (`ethernet_get_mac()`) |
 | UART map | UART1 selector (GPIO25 / 26), UART2 central (GPIO17 / 16), hardware wired |
-| Stop byte | Transmit `0x81` only, accept `0x81` and `0x51` |
+| Stop byte | Accept `0x81` and `0x51`. Toward the real selector send `0x81` (it accepts both, confirmed). Toward the central, echo the tail of the frame being answered, per frame (implemented in the panel port); master mode will use the tail of the central's own frames |
 | What puts the central in slave mode | The Infos request (`'I'`, ID 2), sent in place of a reply |
 | Reliability of `I` reply bytes | Not reliable, not used to identify the central (nor is the splash text, see M5) |
 | Config block layout | Opaque. Field names in the old struct are unreliable and fields are reused across models |

@@ -65,6 +65,8 @@ typedef struct
     uint32_t baud;
     uint32_t partial_timeout_ms;
     uint32_t link_timeout_ms;
+    uint32_t reply_delay_ms;   // selector role (faces the central): delay between the end of the
+                               // central's frame and the start of the reply, 0 = at once
     uint32_t poll_ms;          // host role: key poll interval while the selector answers
     uint32_t down_poll_ms;     // host role: poll interval while the selector does not answer
     uint32_t refresh_ms;       // host role: resend the screen after this long without a change

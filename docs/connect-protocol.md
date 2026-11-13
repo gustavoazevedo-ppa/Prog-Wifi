@@ -58,10 +58,13 @@ Implementation status: not implemented. See `docs/selector-bridge-design.md` for
 | ID | `0x02` for this protocol |
 | Function | ASCII letter, case-sensitive (`'M'` and `'m'` differ) |
 | Checksum | XOR of all bytes before it, then `^ 0xFF` (same as the selector protocol) |
-| Stop | Send `0x81` only. Accept `0x81` or `0x51` on receive. **[owner]** |
+| Stop | `0x81` by default, `0x51` on some centrals. Accept `0x81` or `0x51` on receive. A central that sends `0x51` gets `0x51` (see below). **[owner]** |
 
-Note: the new code's header swaps the two stop constants and transmits `0x51`. The project
-decision is to transmit `0x81` always. **[owner]**
+Note: the new code's header swaps the two stop constants and transmits `0x51`. Project rule
+**[owner]**: in the selector dialect the Prog echoes, per frame, the tail of the frame it answers.
+In master mode the Prog uses the tail of the central's own frames: the tail of the frame that is
+replaced by the Infos request, kept for the whole session. `0x81` is only the default, when the
+Prog has seen no central frame. The central's replies are accepted with either tail.
 
 The old code computes the checksum as XOR of bytes `1..` with `^ 0x81`. For `0x7E`-start frames
 that is identical to the formula above (`0x7E ^ 0xFF = 0x81`), so it is not a bug. It would be wrong

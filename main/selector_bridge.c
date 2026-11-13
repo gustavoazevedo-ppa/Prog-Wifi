@@ -31,6 +31,11 @@
 #define REFRESH_MS 1000
 #define REPLY_TIMEOUT_MS 30 // measured: the reply starts 3-4 ms after the frame and takes 8 ms
 
+// Central side: delay between the end of the central's frame and the start of the Prog's reply.
+// The real selector answers 3-4 ms after the frame (measured); some centrals need a longer gap.
+// 0 = reply at once. Keep it well under the central's reply deadline (not measured yet).
+#define CENTRAL_REPLY_DELAY_MS 0
+
 #define BRIDGE_TASK_STACK 4096
 #define BRIDGE_TASK_PRIO 4
 #define BRIDGE_IN_DEPTH 8
@@ -182,6 +187,7 @@ bool selector_bridge_start(const selector_translator_t *translator)
         .baud = SELECTOR_BAUD,
         .partial_timeout_ms = PARTIAL_TIMEOUT_MS,
         .link_timeout_ms = LINK_TIMEOUT_MS,
+        .reply_delay_ms = CENTRAL_REPLY_DELAY_MS,
         .poll_ms = 0,
         .down_poll_ms = 0,
         .refresh_ms = 0,
@@ -197,6 +203,7 @@ bool selector_bridge_start(const selector_translator_t *translator)
         .baud = SELECTOR_BAUD,
         .partial_timeout_ms = PARTIAL_TIMEOUT_MS,
         .link_timeout_ms = LINK_TIMEOUT_MS,
+        .reply_delay_ms = 0,
         .poll_ms = POLL_MS,
         .down_poll_ms = DOWN_POLL_MS,
         .refresh_ms = REFRESH_MS,

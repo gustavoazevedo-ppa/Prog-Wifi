@@ -237,10 +237,28 @@ static void panel_drain(selector_port_t *p)
     }
 }
 
+// Waits until deadline_us (esp_timer time). The coarse part sleeps, but the FreeRTOS tick is
+// 10 ms, so the last ticks are a busy wait to keep the delay accurate.
+static void port_wait_until(int64_t deadline_us)
+{
+    const int64_t tick_us = 1000000 / configTICK_RATE_HZ;
+    int64_t remaining = deadline_us - esp_timer_get_time();
+
+    if (remaining > 2 * tick_us)
+    {
+        vTaskDelay((TickType_t)(remaining / tick_us - 1)); // leave a tick for the wake-up jitter
+    }
+    while (esp_timer_get_time() < deadline_us)
+    {
+    }
+}
+
 static void panel_handle_frame(selector_port_t *p, const selector_frame_t *frame, uint32_t now)
 {
     selector_msg_t msg;
     selector_drop_reason_t reason;
+    // The frame has just been completed: this is when the central stopped talking
+    int64_t frame_end_us = esp_timer_get_time();
 
     if (selector_decode(frame, SELECTOR_DIR_DOWNSTREAM, &p->last_screen, &msg, &reason) != SELECTOR_DECODE_MSG)
     {
@@ -248,10 +266,16 @@ static void panel_handle_frame(selector_port_t *p, const selector_frame_t *frame
         return;
     }
 
-    // Reply at once, from the cached keys, whatever the bridge does with the message
+    // Reply from the cached keys, whatever the bridge does with the message, reply_delay_ms after
+    // the end of the central's frame (the real selector takes about 3.5 ms)
+    if (p->cfg.reply_delay_ms > 0)
+    {
+        port_wait_until(frame_end_us + (int64_t)p->cfg.reply_delay_ms * 1000);
+    }
     panel_drain(p);
     uint8_t reply[SELECTOR_REPLY_FRAME];
-    size_t len = selector_encode_reply(frame->bytes[3], p->cached_keys, reply);
+    // The reply carries the same tail as the frame it answers (0x81 or the legacy 0x51)
+    size_t len = selector_encode_reply(frame->bytes[3], p->cached_keys, frame->bytes[frame->len - 1], reply);
     uart_write_bytes(p->cfg.uart, (const char *)reply, len);
     port_tap(p, "RX", frame->bytes, frame->len);
     port_tap(p, "TX", reply, len);

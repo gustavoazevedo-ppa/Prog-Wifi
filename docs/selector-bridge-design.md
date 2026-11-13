@@ -52,7 +52,7 @@ Non-goals (for now)
 | 11 | Frame layout exceptions (slightly different header and tail, minor field differences, plus an encrypted protocol variant) are handled with frame profiles. They are not implemented in phase 1. |
 | 12 | The first planned use of master mode is saving presets to the central at initialization. The central de-duplicates writes and does its own wear leveling, so repeated saves of the same content are not a concern. |
 | 13 | The Infos request (`'I'`, ID 2) is what puts the central in slave mode. Its reply bytes are not reliable and are not used to identify the central. There is no reliable automatic identification: the splash text has no stable pattern either. The product comes from the Stinger (`produto` in `POST /iniciar`). |
-| 14 | Every dialect transmits stop byte `0x81` only. Receivers accept `0x81` and `0x51`. |
+| 14 | Receivers accept stop bytes `0x81` and `0x51`. Toward the real selector the Prog sends `0x81` (the selector accepts both). Toward the central, the panel port echoes the tail of the frame it answers, per frame, and master mode will use the tail of the central's own frames. `0x81` is the default when none has been seen. |
 | 15 | The ID byte distinguishes the dialects (1 = selector, 2 = connect). The framer accepts a set of IDs per role. |
 | 16 | The preset is an opaque block. The Stinger provides the right file per central. The Prog decodes it, computes its size, and sends it raw in an `R` frame. Any result code counts as success for now. No read before write. |
 | 17 | The encrypted variant is `byte ^ checksum ^ 0xAA` over ID, Function, Data and Counter (verified against `PROTECT.c`). It is implemented as a frame profile transform, later. |
@@ -174,7 +174,9 @@ Mapping notes
   lives in one place in the codec. The pulse bits are not forwarded: on a real selector they only
   repeat the level (a "last edge" indicator, see `selector-protocol.md` section 4), and the
   replies to the central are rebuilt with the idle pulse-bit pattern.
-- Messages are always re-encoded with stop `0x81`, even if the incoming frame used `0x51`.
+- Messages forwarded to the real selector are re-encoded with stop `0x81`, even if the central's
+  frame used `0x51` (the selector accepts both). Replies to the central are the exception: they
+  echo the tail of the frame they answer (`selector_encode_reply()` takes the stop byte).
 
 ### 5.4 Frame profiles (planned, not in phase 1)
 
@@ -209,6 +211,7 @@ typedef struct
     selector_role_t role;
     uint32_t partial_timeout_ms; // 25
     uint32_t link_timeout_ms;    // 500
+    uint32_t reply_delay_ms;     // selector role: delay before the reply to the central, 10
     uint32_t poll_ms;            // host role: key poll interval while the selector answers, 40
     uint32_t down_poll_ms;       // host role: poll interval while it does not answer, 100
     uint32_t refresh_ms;         // host role: resend the screen after this long unchanged, 1000
@@ -223,9 +226,13 @@ message interface. It does not touch the bridge or the translators.
 
 - Feeds RX bytes into the framer. For every valid downstream frame:
   1. Decode it to a message and queue it to the bridge.
-  2. **Reply immediately** (target a few milliseconds after the stop byte) with the 8-byte
+  2. **Reply** `reply_delay_ms` after the end of the central's frame (`CENTRAL_REPLY_DELAY_MS` in
+     `selector_bridge.c`, default 10 ms; the real selector takes 3 to 4 ms, and 0 means at once)
+     with the 8-byte
      reply: the received function echoed, the cached key state from the last upstream
-     `KEYS` message. Default cache is idle (no key).
+     `KEYS` message. Default cache is idle (no key). The reply ends with the same stop byte as
+     the frame it answers (`0x81`, or the legacy `0x51`): a central that sends `0x51` needs
+     the answer with `0x51`. Decided per frame, no state, and the checksum is not affected.
 - The reply is sent whether or not the translator forwards the message, so the central
   never waits on the Prog's logic.
 - Link: DOWN until the first valid frame; UP on every valid frame; DOWN after
@@ -279,6 +286,9 @@ SELECTOR -> SWITCHING -> MASTER -> WAIT_REVERT -> SELECTOR
 | `WAIT_REVERT` | The Prog has gone silent. The central returns to master by timeout. Silence is expected here, not a fault. |
 
 Rules
+- **Stop byte.** Requests in master mode carry the tail of the central's own frames: the tail of the
+  frame that was replaced by the Infos request, kept for the whole session (`0x81` if none was
+  seen). Replies from the central are accepted with either tail.
 - **No return command.** The central reverts by timeout only. The timeout is variable per
   product, mostly 500 to 1500 ms. It must be a per-product configuration value.
 - **Revert indicator:** once back in master mode the central sends its initial screen (product
@@ -484,7 +494,9 @@ Implementation notes (phase 1, built, not yet run on hardware):
   byte arrives and the reply to the central goes out right after it.
 - Timing defaults (in `selector_bridge.c`): partial frame timeout 25 ms, link timeout 500 ms, host
   key poll 40 ms (100 ms while the selector does not answer), screen refresh 1000 ms, reply
-  timeout 30 ms. The screen is sent only on change plus the refresh, since the selector keeps it on
+  timeout 30 ms. Central side: reply delay 10 ms (`CENTRAL_REPLY_DELAY_MS`; sleeps for the coarse
+  part and busy-waits the last ticks, because the FreeRTOS tick is 10 ms). The screen is sent only
+  on change plus the refresh, since the selector keeps it on
   forever; the poll is what samples the keys (see `selector-protocol.md` section 4 for why 40 ms).
 - `selector_bridge_get_stats()` returns the per-port counters (valid frames, drops per reason,
   queue-full drops, reply timeouts, link changes). Drops are also logged, at most once per
