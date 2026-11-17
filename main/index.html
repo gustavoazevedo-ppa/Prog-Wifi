@@ -619,7 +619,11 @@
 
   document.getElementById("btn-download").addEventListener("click", function () {
     if (!viewerData || !viewerData.available) { return; }
-    var blob = new Blob([viewerData.hex + "\n"], { type: "text/plain" });
+    // A macro starts with '#' (0x23): save the stored bytes as raw text. Anything else is saved as hex.
+    var bytes = hexToBytes(viewerData.hex);
+    var blob = (bytes.length > 0 && bytes[0] === 0x23)
+      ? new Blob([new Uint8Array(bytes)], { type: "text/plain" })
+      : new Blob([viewerData.hex + "\n"], { type: "text/plain" });
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
     a.href = url;

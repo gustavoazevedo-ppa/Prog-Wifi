@@ -2,7 +2,7 @@
  * Prog menu translator. See selector_tr_menu.h.
  *
  * States: MENU (from boot, and after every exit), CENTRAL (the central's screens and the keys pass
- * through), REPLAY (state only for now, no engine: milestone B), STATUS (PROGRAMMING... while the
+ * through, also while a macro is recorded), REPLAY (state only for now, no engine: milestone C), STATUS (PROGRAMMING... while the
  * central is in master mode, planned).
  *
  * The menu does not hand the screen to the central by itself. While it shows, the panel port's reply
@@ -36,6 +36,7 @@
 #define NET_POLL_MS 500          // how often the network state is re-read in the menu
 #define ENTRY_POLL_MS 100        // how often the availability reason of a macro entry is re-read
 #define TEXT_LEN 40              // scratch size for formatting before truncating to 16 columns
+#define STORE_RETRY_TICKS 100    // a recorded macro that could not be stored is retried this many ticks (about 1 s)
 
 // Menu pages: the project page, the three entries, then the IP and MAC pages
 #define PAGE_PROJECT 0
@@ -53,7 +54,7 @@ typedef enum
 } menu_state_t;
 
 // Which central screen is taken as the pop-up while the gate is closed and none is stored.
-// UNVERIFIED rule (open questions F2): needs a frame tap on real centrals.
+// Confirmed on the bench (open questions F2).
 typedef enum
 {
     CAPTURE_NONE = 0,
@@ -86,7 +87,48 @@ static struct
     char last_norm[SELECTOR_MACRO_POPUP_MAX]; // the last central screen, normalized
     char ref_norm[SELECTOR_MACRO_POPUP_MAX];  // the last central screen before the gate closed
     capture_t capture;
+
+    // Macro recording and the cached answer of the scratchpad query
+    bool recording;
+    bool store_pending; // the recorded macro is in s_rec_buf and still has to be stored
+    int store_tries;
+    bool macro_cached; // last good answer of preset_server_macro_query()
+    bool claim_held;   // the selector claim of preset_server is held (see claim_service())
 } s_menu = {.state = MENU_STATE_MENU, .dirty = true, .capture = CAPTURE_NONE};
+
+static uint8_t s_rec_buf[SELECTOR_MACRO_MAX];
+static size_t s_rec_len;
+static selector_macro_enc_t s_enc;
+
+// Mirror of "state != MENU", written only through menu_set_state() in the bridge task and read by
+// the HTTP task (POST /iniciar is refused while it is true). A single byte, so no lock is needed.
+static volatile bool s_transparent;
+
+static void menu_set_state(menu_state_t st)
+{
+    s_menu.state = st;
+    s_transparent = (st != MENU_STATE_MENU);
+}
+
+// The claim stays held while the menu is transparent and while a recorded macro waits to be stored,
+// so /iniciar cannot start a run that the late store would overwrite. The release is bounded (5 ms)
+// and retried on later ticks; the claim is kept until it succeeds.
+static void claim_service(void)
+{
+    if (s_menu.claim_held && s_menu.state == MENU_STATE_MENU && !s_menu.store_pending)
+    {
+        if (preset_server_selector_release())
+        {
+            s_menu.claim_held = false; // /iniciar is accepted again
+        }
+    }
+}
+
+bool selector_tr_menu_transparent(void)
+{
+    return s_transparent;
+}
+
 // ─── Output helpers ─────────────────────────────────────────────────────────
 
 static void emit_screen(const char *l1, const char *l2)
@@ -118,11 +160,16 @@ static int page_count(void)
     return PAGE_IFACE_FIRST + (wifi_is_enabled() ? 2 : 0) + (ethernet_is_enabled() ? 2 : 0);
 }
 
-// Milestone A: the scratchpad accessors come with milestone B, so no macro is ever available yet.
-// Replace this with the preset server's "valid macro in the scratchpad" check then.
+// A valid macro is in the scratchpad. The query never blocks for long; on a lock timeout the last
+// good answer is kept and asked again on the next poll.
 static bool macro_in_scratchpad(void)
 {
-    return false;
+    bool present;
+    if (preset_server_macro_query(&present))
+    {
+        s_menu.macro_cached = present;
+    }
+    return s_menu.macro_cached;
 }
 
 // Why a macro entry cannot be used now, or NULL when it can. First match wins.
@@ -132,7 +179,7 @@ static const char *entry_reason(int page)
     {
         return NULL;
     }
-    if (preset_server_run_active())
+    if (preset_server_run_active() || (page == PAGE_RECORD && s_menu.store_pending))
     {
         return "BUSY";
     }
@@ -334,8 +381,8 @@ static void popup_track(const selector_screen_t *screen)
     memcpy(s_menu.last_norm, norm, sizeof(s_menu.last_norm));
 }
 
-// UNVERIFIED (open questions F1): that a central whose replies stop goes back to its start screen
-// within POPUP_RESET_WAIT_MS has not been checked on a real central.
+// Bench (open questions F1): the bench central shows its start screen again after about 1 s without
+// communication, other models certainly within 5 s, so POPUP_RESET_WAIT_MS stays.
 static void reset_begin(uint32_t now_ms)
 {
     s_menu.popup_ready = false;
@@ -345,10 +392,44 @@ static void reset_begin(uint32_t now_ms)
 
 // ─── State changes ──────────────────────────────────────────────────────────
 
+// Stores the recorded macro. Invalid content is dropped; a lock timeout keeps it pending.
+static void store_try(void)
+{
+    if (selector_macro_validate(s_rec_buf, s_rec_len) != SELECTOR_MACRO_OK)
+    {
+        ESP_LOGW(TAG, "Recorded macro is not valid (%u bytes): dropped", (unsigned)s_rec_len);
+        s_menu.store_pending = false;
+    }
+    else if (preset_server_macro_store(s_rec_buf, s_rec_len))
+    {
+        ESP_LOGI(TAG, "Macro stored in the scratchpad (%u bytes)", (unsigned)s_rec_len);
+        s_menu.store_pending = false;
+        s_menu.macro_cached = true;
+    }
+    else if (++s_menu.store_tries >= STORE_RETRY_TICKS)
+    {
+        ESP_LOGE(TAG, "recorded macro could not be stored");
+        s_menu.store_pending = false;
+    }
+}
+
+static void recording_finish(void)
+{
+    s_menu.recording = false;
+    s_rec_len = selector_macro_enc_finish(&s_enc);
+    s_menu.store_pending = true;
+    s_menu.store_tries = 0;
+    store_try();
+}
+
 static void enter_menu(uint32_t now_ms)
 {
     ESP_LOGI(TAG, "Showing the Prog menu");
-    s_menu.state = MENU_STATE_MENU;
+    if (s_menu.recording)
+    {
+        recording_finish();
+    }
+    menu_set_state(MENU_STATE_MENU);
     s_menu.page = 0;
     s_menu.dirty = true;
     selector_bridge_set_reply_gate(false);
@@ -364,7 +445,7 @@ static void enter_menu(uint32_t now_ms)
 static void enter_central(uint32_t now_ms)
 {
     ESP_LOGI(TAG, "Central transparent: gate open");
-    s_menu.state = MENU_STATE_CENTRAL;
+    menu_set_state(MENU_STATE_CENTRAL);
     s_menu.handback_mask = s_menu.user_keys; // keys held now stay released until let go
     s_menu.last_central_ms = now_ms;
     s_menu.last_key_ms = now_ms;
@@ -378,13 +459,35 @@ static void menu_pick(uint32_t now_ms)
     switch (s_menu.page)
     {
     case PAGE_ENTER:
-        enter_central(now_ms);
+        // The claim is atomic with the start of a run: it fails while a run is active
+        if (s_menu.claim_held || preset_server_selector_claim())
+        {
+            s_menu.claim_held = true;
+            enter_central(now_ms);
+        }
         break;
     case PAGE_RECORD:
-    case PAGE_REPLAY:
-        if (entry_reason(s_menu.page) == NULL)
+        if (entry_reason(PAGE_RECORD) == NULL)
         {
-            ESP_LOGI(TAG, "Macro entry %d picked: not implemented yet", s_menu.page);
+            if (!selector_macro_enc_begin(&s_enc, s_rec_buf, sizeof(s_rec_buf), s_menu.popup))
+            {
+                ESP_LOGW(TAG, "Recording not started: the header does not fit");
+                break;
+            }
+            if (!s_menu.claim_held && !preset_server_selector_claim())
+            {
+                break; // a run started meanwhile: stay in the menu
+            }
+            s_menu.claim_held = true;
+            s_menu.recording = true;
+            ESP_LOGI(TAG, "Recording started");
+            enter_central(now_ms);
+        }
+        break;
+    case PAGE_REPLAY:
+        if (entry_reason(PAGE_REPLAY) == NULL)
+        {
+            ESP_LOGI(TAG, "Macro replay picked: replay not implemented yet (milestone C)");
         }
         break;
     default:
@@ -487,6 +590,19 @@ static void menu_on_msg(void *ctx, selector_dir_t dir, const selector_msg_t *msg
     }
 }
 
+// A reply went to the central. While recording, counted replies feed the encoder with the key mask
+// that was actually sent (the key that picked the entry is masked by handback_mask, so it is not
+// recorded).
+static void menu_on_reply(void *ctx, uint8_t keys, bool counted)
+{
+    (void)ctx;
+    if (s_menu.recording && counted && !selector_macro_enc_reply(&s_enc, keys))
+    {
+        ESP_LOGW(TAG, "Recording buffer full: recording ends");
+        enter_menu(selector_bridge_now_ms());
+    }
+}
+
 static void menu_on_link(void *ctx, selector_side_t side, bool up)
 {
     (void)ctx;
@@ -504,7 +620,11 @@ static void menu_on_mode(void *ctx, bool central_slave)
     (void)ctx;
     if (central_slave)
     {
-        s_menu.state = MENU_STATE_STATUS;
+        if (s_menu.recording)
+        {
+            recording_finish(); // unreachable until master mode exists
+        }
+        menu_set_state(MENU_STATE_STATUS);
         emit_screen("PROGRAMMING...", "");
         emit_keys(0);
     }
@@ -518,6 +638,12 @@ static void menu_on_mode(void *ctx, bool central_slave)
 static void menu_on_tick(void *ctx, uint32_t now_ms)
 {
     (void)ctx;
+
+    if (s_menu.store_pending)
+    {
+        store_try();
+    }
+    claim_service();
 
     if (!s_menu.started)
     {
@@ -544,7 +670,8 @@ static void menu_on_tick(void *ctx, uint32_t now_ms)
     {
         s_menu.last_key_ms = now_ms;
     }
-    // Exit rules. UNVERIFIED in practice (open questions D2, F8): both are tuning values.
+    // Exit rules. Both values confirmed on the bench (open questions D2, F8): 3 s of central silence,
+    // 3 s with no key pressed (also while recording).
     if ((s_menu.state == MENU_STATE_CENTRAL || s_menu.state == MENU_STATE_REPLAY) &&
         (uint32_t)(now_ms - s_menu.last_central_ms) >= CENTRAL_SILENCE_MS)
     {
@@ -589,7 +716,7 @@ static const selector_translator_t s_menu_translator = {
     .on_link = menu_on_link,
     .on_mode = menu_on_mode,
     .on_tick = menu_on_tick,
-    .on_reply = NULL, // recording and replay (milestone B) use it
+    .on_reply = menu_on_reply, // recording (milestone B); replay (milestone C) will use it too
     .gate_closed_at_start = true, // the menu keeps the central silent from the first frame
 };
 

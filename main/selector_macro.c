@@ -206,7 +206,10 @@ static bool group_add_number(char *g, size_t *n, uint32_t count)
 
 // Writes the pending run, then one key token per key that differs between e->mask and
 // new_mask. All or nothing: a group that does not fit marks the encoder full.
-static bool enc_flush(selector_macro_enc_t *e, uint8_t new_mask)
+// Unless final, it keeps room for the closing group of enc_finish (separator, trailing wait of
+// two number chunks, one release token per key held in new_mask), so a full buffer still ends
+// with the wait and the releases.
+static bool enc_flush(selector_macro_enc_t *e, uint8_t new_mask, bool final)
 {
     char g[GROUP_MAX];
     size_t n = 0;
@@ -240,7 +243,20 @@ static bool enc_flush(selector_macro_enc_t *e, uint8_t new_mask)
 
     // A separator is needed unless this is the first token after the header line
     bool sep = e->len > 0 && e->buf[e->len - 1] != '\n';
-    if (e->len + n + (sep ? 1 : 0) > e->cap)
+    size_t limit = e->cap;
+    if (!final)
+    {
+        size_t reserve = 13;
+        for (size_t k = 0; k < KEY_COUNT; k++)
+        {
+            if (new_mask & s_keys[k].bit)
+            {
+                reserve += 2;
+            }
+        }
+        limit = e->cap > reserve ? e->cap - reserve : 0;
+    }
+    if (e->len + n + (sep ? 1 : 0) > limit)
     {
         e->full = true;
         return false;
@@ -284,7 +300,7 @@ bool selector_macro_enc_reply(selector_macro_enc_t *e, uint8_t mask)
         e->run++;
         return true;
     }
-    if (!enc_flush(e, mask))
+    if (!enc_flush(e, mask, false))
     {
         return false;
     }
@@ -295,10 +311,12 @@ bool selector_macro_enc_reply(selector_macro_enc_t *e, uint8_t mask)
 
 size_t selector_macro_enc_finish(selector_macro_enc_t *e)
 {
-    if (!e->full && (e->run > 0 || e->mask != 0))
+    // Also after the buffer filled up: run and mask still describe the last complete token, and
+    // enc_flush kept room for this closing group.
+    if (e->run > 0 || e->mask != 0)
     {
         // The trailing wait stays as recorded, and keys still held get their release token
-        if (enc_flush(e, 0))
+        if (enc_flush(e, 0, true))
         {
             e->run = 0;
             e->mask = 0;
@@ -464,6 +482,54 @@ bool selector_macro_selftest(void)
             selector_macro_validate(small, len) != SELECTOR_MACRO_OK)
         {
             return false;
+        }
+    }
+
+    // A full buffer with keys held still ends with the trailing wait and every release token
+    {
+        uint8_t small[40];
+        int held[26] = {0};
+        bool refused = false;
+        if (!selector_macro_enc_begin(&e, small, sizeof(small), "H"))
+        {
+            return false;
+        }
+        for (int i = 0; i < 60; i++)
+        {
+            uint8_t k = (i & 1) ? (uint8_t)(SELECTOR_KEY_OK | SELECTOR_KEY_SEL) : SELECTOR_KEY_OK;
+            if (!selector_macro_enc_reply(&e, k))
+            {
+                refused = true;
+            }
+        }
+        size_t len = selector_macro_enc_finish(&e);
+        if (!refused || len > sizeof(small) || selector_macro_validate(small, len) != SELECTOR_MACRO_OK)
+        {
+            return false;
+        }
+        bool body = false;
+        for (size_t i = 0; i < len; i++)
+        {
+            char c = (char)small[i];
+            if (c == '\n')
+            {
+                body = true;
+            }
+            else if (body && c >= 'A' && c <= 'Z')
+            {
+                held[c - 'A']++;
+            }
+            else if (body && c >= 'a' && c <= 'z')
+            {
+                held[c - 'a']--;
+            }
+        }
+        for (int i = 0; i < 26; i++)
+        {
+            if (held[i] != 0)
+            {
+                return false;
+            }
         }
     }
 

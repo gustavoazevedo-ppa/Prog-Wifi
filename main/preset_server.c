@@ -38,6 +38,8 @@
 #include "preset_server.h"
 #include "admin_api.h"
 #include "http_log.h"
+#include "selector_macro.h"
+#include "selector_tr_menu.h"
 
 #define TAG "PRESET"
 
@@ -59,13 +61,15 @@
 #define PRESET_MSG_LEN 160
 #define PRESET_SERVER_PORT 80
 
-/* Decoded preset (binary) kept in static RAM: the last one that was downloaded AND decoded
- * successfully. A failed decode leaves it untouched. The worker task is the only writer;
+/* Decoded preset (binary, or a macro as ASCII text starting with '#') kept in static RAM: the
+ * last one that was downloaded AND decoded successfully (or recorded by the selector menu).
+ * A failed decode leaves it untouched. The worker task is the only writer;
  * the HTTP task reads it through preset_server_preset_snapshot(). Both sides hold
  * s_data_lock, which also protects the run history below. */
 static uint8_t s_preset_bin[PRESET_BIN_MAX];
 static size_t s_preset_len = 0;
 static bool s_preset_valid = false;
+static bool s_preset_is_macro = false; /* the buffer holds a valid macro (cached, so polling is cheap) */
 static preset_info_t s_preset_info;
 static SemaphoreHandle_t s_data_lock;
 
@@ -302,7 +306,13 @@ typedef enum
     BEGIN_OK,
     BEGIN_RUN_ACTIVE, /* a run is already in progress (*cur = that run) */
     BEGIN_ADMIN_BUSY, /* firmware update / format / reboot in progress (state untouched) */
+    BEGIN_SELECTOR_BUSY, /* the Prog menu is transparent (state untouched) */
 } begin_result_t;
+
+/* The selector claim: set while the Prog menu is transparent (CENTRAL / recording). It is
+ * taken and checked under s_lock, the same lock that starts a run, so a run and a transparent
+ * session can never start together. */
+static bool s_selector_claimed;
 
 /* Lock order: s_lock (here) -> admin lock (inside admin_api_blocks_runs()).
  * admin_api.c never takes s_lock while holding its own lock, so this cannot deadlock. */
@@ -310,7 +320,11 @@ static begin_result_t state_try_begin(const run_state_t *in, run_state_t *cur)
 {
     begin_result_t res;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (s_state.status == ST_RUNNING)
+    if (s_selector_claimed)
+    {
+        res = BEGIN_SELECTOR_BUSY;
+    }
+    else if (s_state.status == ST_RUNNING)
     {
         *cur = s_state;
         res = BEGIN_RUN_ACTIVE;
@@ -544,7 +558,37 @@ typedef struct
     size_t len;
     size_t cap;
     bool overflow;
+    /* Lead scan over the whole 200 body, even the part past the cap: is the first character after
+     * an optional BOM and blanks a '#' (macro file)? */
+    size_t seen;
+    size_t bom_len;
+    bool lead_done;
+    bool is_macro;
 } fetch_ctx_t;
+
+static void fetch_scan_lead(fetch_ctx_t *c, const uint8_t *d, size_t n)
+{
+    static const uint8_t bom[3] = {0xEF, 0xBB, 0xBF};
+    for (size_t i = 0; i < n && !c->lead_done; i++)
+    {
+        uint8_t b = d[i];
+        size_t p = c->seen++;
+        if (p < 3 && p == c->bom_len && b == bom[p])
+        {
+            c->bom_len++;
+            continue;
+        }
+        if (c->bom_len > 0 && c->bom_len < 3)
+        {
+            c->lead_done = true; /* broken BOM: not a macro */
+        }
+        else if (!isspace((int)b))
+        {
+            c->lead_done = true;
+            c->is_macro = (b == '#');
+        }
+    }
+}
 
 static esp_err_t fetch_evt_handler(esp_http_client_event_t *evt)
 {
@@ -552,6 +596,7 @@ static esp_err_t fetch_evt_handler(esp_http_client_event_t *evt)
     if (evt->event_id == HTTP_EVENT_ON_DATA && c != NULL &&
         esp_http_client_get_status_code(evt->client) == 200)
     {
+        fetch_scan_lead(c, (const uint8_t *)evt->data, (size_t)evt->data_len);
         if (c->len + (size_t)evt->data_len > c->cap)
         {
             c->overflow = true;
@@ -568,6 +613,10 @@ static int fetch_preset(const char *url, fetch_ctx_t *ctx, esp_err_t *err_out)
 {
     ctx->len = 0;
     ctx->overflow = false;
+    ctx->seen = 0;
+    ctx->bom_len = 0;
+    ctx->lead_done = false;
+    ctx->is_macro = false;
 
     esp_http_client_config_t cfg = {
         .url = url,
@@ -629,6 +678,118 @@ static int hex_decode(char *text, size_t len, uint8_t *bin, size_t bin_cap, char
     return (int)(n / 2);
 }
 
+/* Macro file: after an optional BOM and blanks, the first character is '#'. Returns a pointer
+ * to it, or NULL for any other file (which then takes the hex path). */
+static const uint8_t *macro_start(const char *text, size_t len)
+{
+    size_t i = 0;
+    if (len >= 3 && (uint8_t)text[0] == 0xEF && (uint8_t)text[1] == 0xBB && (uint8_t)text[2] == 0xBF)
+    {
+        i = 3;
+    }
+    while (i < len && isspace((unsigned char)text[i]))
+    {
+        i++;
+    }
+    return (i < len && text[i] == '#') ? (const uint8_t *)&text[i] : NULL;
+}
+
+/* Caller holds s_data_lock and has already written len bytes into s_preset_bin. */
+static void preset_commit_locked(size_t len, uint32_t seq, const char *id, const char *source, preset_level_t lvl)
+{
+    s_preset_len = len;
+    s_preset_valid = true;
+    s_preset_is_macro = len > 0 && s_preset_bin[0] == '#' &&
+                        selector_macro_validate(s_preset_bin, len) == SELECTOR_MACRO_OK;
+    s_preset_info.seq = seq;
+    copy_ascii(s_preset_info.id, sizeof(s_preset_info.id), id);
+    copy_ascii(s_preset_info.source, sizeof(s_preset_info.source), source);
+    s_preset_info.level = lvl;
+    s_preset_info.bytes = (uint16_t)len;
+    s_preset_info.crc32 = crc32_calc(s_preset_bin, len);
+    s_preset_info.loaded_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
+}
+
+/* ─── Macro scratchpad accessors (bridge task: short lock timeout, never portMAX_DELAY) ─── */
+static bool macro_lock(void)
+{
+    return s_data_lock != NULL && xSemaphoreTake(s_data_lock, pdMS_TO_TICKS(PRESET_MACRO_LOCK_MS)) == pdTRUE;
+}
+
+bool preset_server_selector_claim(void)
+{
+    bool ok = false;
+    if (s_lock != NULL && xSemaphoreTake(s_lock, pdMS_TO_TICKS(PRESET_MACRO_LOCK_MS)) == pdTRUE)
+    {
+        /* Not admin_api_blocks_runs(): it takes the admin lock with portMAX_DELAY and this runs
+         * in the bridge task. The menu entry already checked it just before asking for the claim. */
+        if (s_state.status != ST_RUNNING)
+        {
+            s_selector_claimed = true;
+            ok = true;
+        }
+        xSemaphoreGive(s_lock);
+    }
+    return ok;
+}
+
+bool preset_server_selector_release(void)
+{
+    if (s_lock == NULL || xSemaphoreTake(s_lock, pdMS_TO_TICKS(PRESET_MACRO_LOCK_MS)) != pdTRUE)
+    {
+        return false;
+    }
+    s_selector_claimed = false;
+    xSemaphoreGive(s_lock);
+    return true;
+}
+
+bool preset_server_macro_query(bool *present)
+{
+    if (!macro_lock())
+    {
+        return false;
+    }
+    *present = s_preset_valid && s_preset_is_macro;
+    xSemaphoreGive(s_data_lock);
+    return true;
+}
+
+bool preset_server_macro_copy(uint8_t *out, size_t cap, size_t *len)
+{
+    bool ok = false;
+    if (!macro_lock())
+    {
+        return false;
+    }
+    if (s_preset_valid && s_preset_is_macro && s_preset_len <= cap)
+    {
+        memcpy(out, s_preset_bin, s_preset_len);
+        *len = s_preset_len;
+        ok = true;
+    }
+    xSemaphoreGive(s_data_lock);
+    return ok;
+}
+
+bool preset_server_macro_store(const uint8_t *data, size_t len)
+{
+    if (data == NULL || len == 0 || len > PRESET_BIN_MAX || data[0] != '#' ||
+        selector_macro_validate(data, len) != SELECTOR_MACRO_OK)
+    {
+        return false;
+    }
+    if (!macro_lock())
+    {
+        return false;
+    }
+    memcpy(s_preset_bin, data, len);
+    /* seq of the newest request, so the viewer does not warn about a newer failed request */
+    preset_commit_locked(len, s_hist_next_seq - 1, "", "recorded", PRESET_LVL_NA);
+    xSemaphoreGive(s_data_lock);
+    return true;
+}
+
 /* ─── Simulated run ──────────────────────────────────────────────────────── */
 static void sim_run_done_cb(void *arg)
 {
@@ -657,6 +818,19 @@ typedef struct
     char produto[PRESET_FIELD_LEN];
     run_state_t other; /* the run in progress (409), or the "update in progress" reply */
 } iniciar_tmp_t;
+
+/* 409 that is not a run conflict: reply with the request id and status 3 and the given message.
+ * The stored state is untouched. */
+static esp_err_t reject_busy(httpd_req_t *req, iniciar_tmp_t *tmp, run_state_t *st, const char *msg, const char *logtxt)
+{
+    tmp->other = *st;
+    tmp->other.status = ST_ERROR;
+    tmp->other.msg_count = 0;
+    add_msg(&tmp->other, "%s", msg);
+    ESP_LOGW(TAG, "%s", logtxt);
+    hist_end(s_req_seq, 409, PRESET_LVL_NA, 0, false, 0);
+    return send_status(req, "409 Conflict", &tmp->other);
+}
 
 /* Returns the handler result. *handed_off is set when job now belongs to the worker. */
 static esp_err_t iniciar_process(httpd_req_t *req, job_t *job, iniciar_tmp_t *tmp, bool *handed_off)
@@ -732,21 +906,20 @@ static esp_err_t iniciar_process(httpd_req_t *req, job_t *job, iniciar_tmp_t *tm
         job->caminho[clen + 1] = '\0';
     }
 
-    /* --- Busy check + accept (atomic): the run is "running" until the preset is handled --- */
+    /* --- Busy check + accept (atomic): the run is "running" until the preset is handled.
+     *     The selector claim (Prog menu transparent, also while recording) is checked in the
+     *     same critical section. --- */
     st->status = ST_RUNNING;
     switch (state_try_begin(st, &tmp->other))
     {
     case BEGIN_OK:
         break;
+    case BEGIN_SELECTOR_BUSY:
+        return reject_busy(req, tmp, st, "selector in use, try again later",
+                           "POST /iniciar rejected (409): selector in use (Prog menu is transparent)");
     case BEGIN_ADMIN_BUSY:
-        /* Not a run conflict: reply with the request id and status 3 (the stored state is untouched) */
-        tmp->other = *st;
-        tmp->other.status = ST_ERROR;
-        tmp->other.msg_count = 0;
-        add_msg(&tmp->other, "firmware update in progress, try again later");
-        ESP_LOGW(TAG, "POST /iniciar rejected (409): firmware update / restart in progress");
-        hist_end(s_req_seq, 409, PRESET_LVL_NA, 0, false, 0);
-        return send_status(req, "409 Conflict", &tmp->other);
+        return reject_busy(req, tmp, st, "firmware update in progress, try again later",
+                           "POST /iniciar rejected (409): firmware update / restart in progress");
     default: /* BEGIN_RUN_ACTIVE: tmp->other holds the run in progress */
         ESP_LOGW(TAG, "POST /iniciar rejected (409): a run is already in progress");
         hist_end(s_req_seq, 409, PRESET_LVL_NA, 0, false, 0);
@@ -866,7 +1039,8 @@ static void run_job(job_t *job)
 
     bool found = false;
     bool only_not_found = true;
-    for (int i = 0; i < url_count && !found; i++)
+    bool macro_too_large = false; /* a 200 macro over the limit ends the fallback: terminal failure */
+    for (int i = 0; i < url_count && !found && !macro_too_large; i++)
     {
         esp_err_t terr = ESP_OK;
         int code = fetch_preset(urls[i], &ctx, &terr);
@@ -890,7 +1064,14 @@ static void run_job(job_t *job)
         else
         {
             only_not_found = false;
-            if (code == 200)
+            if (code == 200 && ctx.is_macro)
+            {
+                macro_too_large = true;
+                /* A leading '#' means a macro file, not hex: report it as an invalid macro */
+                add_msg(&st, "%s: preset file is not a valid macro (too large, max %d bytes)", urls[i],
+                        SELECTOR_MACRO_MAX);
+            }
+            else if (code == 200)
             {
                 add_msg(&st, "%s: file too large (max %d hex chars)", urls[i], PRESET_MAX_HEX_CHARS);
             }
@@ -923,40 +1104,89 @@ static void run_job(job_t *job)
     /* --- Decode hex straight into the static buffer. hex_decode() validates everything
      *     before it writes a byte, so a failure leaves the previous preset untouched. --- */
     job->level = lvls[found_idx];
-    xSemaphoreTake(s_data_lock, portMAX_DELAY);
-    int nbytes = hex_decode(ctx.buf, ctx.len, s_preset_bin, PRESET_BIN_MAX, clean);
-    if (nbytes >= 0)
+    int nbytes;
+    bool is_macro = false;
+    const uint8_t *mstart = macro_start(ctx.buf, ctx.len);
+    if (mstart != NULL)
     {
-        s_preset_len = (size_t)nbytes;
-        s_preset_valid = true;
-        s_preset_info.seq = job->seq;
-        format_id(&st, s_preset_info.id, sizeof(s_preset_info.id));
-        copy_ascii(s_preset_info.source, sizeof(s_preset_info.source), urls[found_idx]);
-        s_preset_info.level = job->level;
-        s_preset_info.bytes = (uint16_t)nbytes;
-        s_preset_info.crc32 = crc32_calc(s_preset_bin, (size_t)nbytes);
-        s_preset_info.loaded_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
-        job->bytes = (uint16_t)nbytes;
+        /* Macro file: stored as raw text from the '#' on. Validated before any write, so a
+         * failure leaves the previous buffer untouched. */
+        size_t mlen = ctx.len - (size_t)(mstart - (const uint8_t *)ctx.buf);
+        /* The whole downloaded file is validated (the validator skips the BOM and blanks and
+         * enforces the 2048-byte limit); only the slice from the '#' is stored. */
+        selector_macro_result_t mres = selector_macro_validate((const uint8_t *)ctx.buf, ctx.len);
+        if (mres == SELECTOR_MACRO_OK)
+        {
+            mres = selector_macro_validate(mstart, mlen);
+        }
+        if (mres != SELECTOR_MACRO_OK)
+        {
+            free(ctx.buf);
+            free(clean);
+            st.msg_count = 0;
+            st.status = ST_ERROR;
+            add_msg(&st, "preset file is not a valid macro");
+            state_commit(&st);
+            ESP_LOGW(TAG, "run %.0f failed: invalid macro (validator result %d)", st.id_num, (int)mres);
+            job_finish(job, "500 Internal Server Error", &st);
+            return;
+        }
+        is_macro = true;
+        nbytes = (int)mlen;
+        char idtxt[24];
+        format_id(&st, idtxt, sizeof(idtxt));
+        xSemaphoreTake(s_data_lock, portMAX_DELAY);
+        memcpy(s_preset_bin, mstart, mlen);
+        preset_commit_locked(mlen, job->seq, idtxt, urls[found_idx], job->level);
+        job->bytes = (uint16_t)mlen;
         job->crc = s_preset_info.crc32;
         job->has_crc = true;
+        xSemaphoreGive(s_data_lock);
+        /* Log text: line breaks as '|', other control characters as blanks */
+        for (size_t k = 0; k < mlen && k < PRESET_MAX_HEX_CHARS; k++)
+        {
+            clean[k] = (mstart[k] == '\n') ? '|' : (mstart[k] < 0x20 ? ' ' : (char)mstart[k]);
+        }
+        clean[mlen] = '\0';
     }
-    xSemaphoreGive(s_data_lock);
-    if (nbytes < 0)
+    else
     {
-        free(ctx.buf);
-        free(clean);
-        st.msg_count = 0;
-        st.status = ST_ERROR;
-        add_msg(&st, "preset file is not valid hex");
-        state_commit(&st);
-        ESP_LOGW(TAG, "run %.0f failed: invalid hex content", st.id_num);
-        job_finish(job, "500 Internal Server Error", &st);
-        return;
+        char idtxt[24];
+        format_id(&st, idtxt, sizeof(idtxt));
+        xSemaphoreTake(s_data_lock, portMAX_DELAY);
+        nbytes = hex_decode(ctx.buf, ctx.len, s_preset_bin, PRESET_BIN_MAX, clean);
+        if (nbytes >= 0)
+        {
+            preset_commit_locked((size_t)nbytes, job->seq, idtxt, urls[found_idx], job->level);
+            job->bytes = (uint16_t)nbytes;
+            job->crc = s_preset_info.crc32;
+            job->has_crc = true;
+        }
+        xSemaphoreGive(s_data_lock);
+        if (nbytes < 0)
+        {
+            free(ctx.buf);
+            free(clean);
+            st.msg_count = 0;
+            st.status = ST_ERROR;
+            add_msg(&st, "preset file is not valid hex");
+            state_commit(&st);
+            ESP_LOGW(TAG, "run %.0f failed: invalid hex content", st.id_num);
+            job_finish(job, "500 Internal Server Error", &st);
+            return;
+        }
     }
 
     /* --- "Action": log only (UART protocol will come later) --- */
-    ESP_LOGI(TAG, "%s", PRESET_SIM_ACTION_TEXT);
-    ESP_LOGI(TAG, "preset (%d bytes): %s", nbytes, clean);
+    if (is_macro)
+    {
+        ESP_LOGI(TAG, "preset (macro, %d bytes): %s", nbytes, clean);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "%s", PRESET_SIM_ACTION_TEXT);
+        ESP_LOGI(TAG, "preset (%d bytes): %s", nbytes, clean);
+    }
     free(ctx.buf);
     free(clean);
 
@@ -966,8 +1196,20 @@ static void run_job(job_t *job)
     st.msg_count = 0; /* success: drop the "not found" notes of skipped locations */
     st.status = ST_RUNNING;
     state_commit(&st);
-    ESP_LOGI(TAG, "run %.0f: preset in memory (%d bytes), UART transfer handed to uart_task", st.id_num, nbytes);
-    xTaskNotify(s_uart_task, (uint32_t)nbytes, eSetValueWithOverwrite);
+    if (is_macro)
+    {
+        /* MILESTONE C PLACEHOLDER: replay engine goes here; today the macro is only stored and the
+         * run finishes via the simulated timer (status 2 does not mean "replayed"). */
+        esp_timer_stop(s_sim_timer); /* ignore error if not running */
+        esp_timer_start_once(s_sim_timer, (uint64_t)PRESET_SIM_RUN_MS * 1000ULL);
+        ESP_LOGI(TAG, "run %.0f: macro stored (%d bytes), replay not implemented (milestone C), simulated finish",
+                 st.id_num, nbytes);
+    }
+    else
+    {
+        ESP_LOGI(TAG, "run %.0f: preset in memory (%d bytes), UART transfer handed to uart_task", st.id_num, nbytes);
+        xTaskNotify(s_uart_task, (uint32_t)nbytes, eSetValueWithOverwrite);
+    }
 
     job_finish(job, "200 OK", &st);
 }

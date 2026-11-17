@@ -88,4 +88,27 @@ typedef struct
  * yet (since boot) or bin_cap is too small. */
 bool preset_server_preset_snapshot(preset_info_t *info, uint8_t *bin, size_t bin_cap, size_t *bin_len);
 
+/* ─── Macro scratchpad access for the selector bridge task ─────────────────
+ * The scratchpad holds either a binary preset or a macro (ASCII, first byte '#').
+ * These take the data lock with a PRESET_MACRO_LOCK_MS timeout so the bridge task is never
+ * blocked for long; false from a lock timeout means "try again later". */
+#define PRESET_MACRO_LOCK_MS 5
+
+/* Selector claim: taken by the Prog menu when it goes transparent (CENTRAL / recording), released
+ * when it is back in the menu and a recorded macro is no longer pending. Atomic with the start of
+ * a run: claim fails (false) while a run is active or on a lock timeout; POST /iniciar answers 409
+ * while the claim is held. Both use the 5 ms timeout; release returns false on a timeout and the
+ * caller keeps the claim and retries. (The admin-busy check stays with the caller.) */
+bool preset_server_selector_claim(void);
+bool preset_server_selector_release(void);
+
+/* *present = the scratchpad holds a valid macro. False = lock timeout (*present untouched). */
+bool preset_server_macro_query(bool *present);
+
+/* Copies the macro out. True only if the scratchpad holds a valid macro that fits cap. */
+bool preset_server_macro_copy(uint8_t *out, size_t cap, size_t *len);
+
+/* Validates, then stores a recorded macro (source "recorded"). False = invalid or lock timeout. */
+bool preset_server_macro_store(const uint8_t *data, size_t len);
+
 #endif // PRESET_SERVER_H

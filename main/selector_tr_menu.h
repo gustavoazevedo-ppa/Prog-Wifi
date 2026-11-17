@@ -12,4 +12,9 @@
 
 const selector_translator_t *selector_tr_menu(void);
 
+// True while the menu is not showing (the central's screens and keys pass through, including
+// while a macro is being recorded). Written by the bridge task only, safe to read from any task.
+// POST /iniciar is refused while it is true.
+bool selector_tr_menu_transparent(void);
+
 #endif // SELECTOR_TR_MENU_H
