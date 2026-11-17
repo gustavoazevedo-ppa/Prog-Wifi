@@ -17,4 +17,9 @@ const selector_translator_t *selector_tr_menu(void);
 // POST /iniciar is refused while it is true.
 bool selector_tr_menu_transparent(void);
 
+// Asks the menu to replay the macro in the scratchpad for a running POST /iniciar run. Never
+// blocks. False when the bridge has not started. The result comes back through
+// preset_server_macro_run_finish().
+bool selector_tr_menu_run_macro(void);
+
 #endif // SELECTOR_TR_MENU_H

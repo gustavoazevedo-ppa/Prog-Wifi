@@ -2,8 +2,8 @@
  * Prog menu translator. See selector_tr_menu.h.
  *
  * States: MENU (from boot, and after every exit), CENTRAL (the central's screens and the keys pass
- * through, also while a macro is recorded), REPLAY (state only for now, no engine: milestone C), STATUS (PROGRAMMING... while the
- * central is in master mode, planned).
+ * through, also while a macro is recorded), REPLAY (the stored macro is sent as key states, the real
+ * selector's keys are ignored), STATUS (PROGRAMMING... while the central is in master mode, planned).
  *
  * The menu does not hand the screen to the central by itself. While it shows, the panel port's reply
  * gate is closed, so the central keeps sending its start screen (the pop-up), which is stored here.
@@ -13,6 +13,7 @@
  */
 
 #include <ctype.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -37,6 +38,8 @@
 #define ENTRY_POLL_MS 100        // how often the availability reason of a macro entry is re-read
 #define TEXT_LEN 40              // scratch size for formatting before truncating to 16 columns
 #define STORE_RETRY_TICKS 100    // a recorded macro that could not be stored is retried this many ticks (about 1 s)
+#define RUN_COPY_RETRY_TICKS 100 // the macro of a /iniciar run that could not be copied is retried this many ticks (about 1 s)
+#define MACRO_RESULT_SHOW_MS 5000 // how long the result page (MACRO OK / MACRO FAIL) shows, or until a key
 
 // Menu pages: the project page, the three entries, then the IP and MAC pages
 #define PAGE_PROJECT 0
@@ -52,6 +55,14 @@ typedef enum
     MENU_STATE_REPLAY,
     MENU_STATE_STATUS
 } menu_state_t;
+
+// Who started the replay: the menu entry [REPLAY MACRO], or a POST /iniciar run (reports to /status)
+typedef enum
+{
+    REPLAY_OWNER_NONE = 0,
+    REPLAY_OWNER_MENU,
+    REPLAY_OWNER_RUN
+} replay_owner_t;
 
 // Which central screen is taken as the pop-up while the gate is closed and none is stored.
 // Confirmed on the bench (open questions F2).
@@ -94,11 +105,31 @@ static struct
     int store_tries;
     bool macro_cached; // last good answer of preset_server_macro_query()
     bool claim_held;   // the selector claim of preset_server is held (see claim_service())
+
+    // Macro replay and the result of a /iniciar run
+    replay_owner_t replay_owner;
+    bool run_pending;    // a /iniciar run waits for the central to be ready, then starts the replay
+    int run_copy_tries;
+    bool report_pending; // the result of the run is not yet handed to preset_server
+    preset_macro_result_t report_result;
+    bool result_active;  // the result page shows on page 0
+    bool result_ok;
+    preset_macro_result_t result_cause;
+    uint32_t result_ms;
+    uint8_t replay_mask;   // key mask the next reply is expected to carry
+    bool replay_done;      // the last reply of the script went out; the message of the same event ends the replay
+    bool run_active;       // last good answer of preset_server_run_active_try()
 } s_menu = {.state = MENU_STATE_MENU, .dirty = true, .capture = CAPTURE_NONE};
 
 static uint8_t s_rec_buf[SELECTOR_MACRO_MAX];
 static size_t s_rec_len;
 static selector_macro_enc_t s_enc;
+static selector_macro_iter_t s_iter;
+
+// POST /iniciar to the bridge task: the request flag (set by the HTTP task, consumed in the tick) and
+// a mirror of "the first tick has run" so a request is refused when the bridge never started.
+static atomic_bool s_run_req;
+static volatile bool s_started_pub;
 
 // Mirror of "state != MENU", written only through menu_set_state() in the bridge task and read by
 // the HTTP task (POST /iniciar is refused while it is true). A single byte, so no lock is needed.
@@ -172,14 +203,26 @@ static bool macro_in_scratchpad(void)
     return s_menu.macro_cached;
 }
 
-// Why a macro entry cannot be used now, or NULL when it can. First match wins.
+// A run or a replay is going on, or its result is still on the way to /status
+static bool menu_busy(void)
+{
+    bool active;
+    if (preset_server_run_active_try(&active)) // bounded lock: this runs in the bridge task
+    {
+        s_menu.run_active = active;
+    }
+    return s_menu.run_active || s_menu.state == MENU_STATE_REPLAY || s_menu.run_pending ||
+           s_menu.report_pending;
+}
+
+// Why a menu entry cannot be used now, or NULL when it can. First match wins.
 static const char *entry_reason(int page)
 {
     if (page == PAGE_ENTER)
     {
-        return NULL;
+        return menu_busy() ? "BUSY" : NULL;
     }
-    if (preset_server_run_active() || (page == PAGE_RECORD && s_menu.store_pending))
+    if (menu_busy() || s_menu.store_pending)
     {
         return "BUSY";
     }
@@ -296,6 +339,14 @@ static void render_page(int page, char *l1, char *l2)
 {
     if (page == PAGE_PROJECT)
     {
+        if (s_menu.result_active)
+        {
+            const char *cause = s_menu.result_cause == PRESET_MACRO_SILENT ? "CENTRAL SILENT" : "PROTOCOL ERROR";
+
+            copy_cols(l1, s_menu.result_ok ? "MACRO OK" : "MACRO FAIL");
+            copy_cols(l2, s_menu.result_ok ? "REPLAY DONE" : cause);
+            return;
+        }
         render_project(l1, l2);
         return;
     }
@@ -442,6 +493,128 @@ static void enter_menu(uint32_t now_ms)
     reset_begin(now_ms);
 }
 
+// Ends a replay (success or failure) and returns to the menu with the reset procedure. The result
+// is fixed here, before the reset: a later reset timeout does not change it.
+static void replay_end(preset_macro_result_t res, uint32_t now_ms)
+{
+    replay_owner_t owner = s_menu.replay_owner;
+
+    ESP_LOGI(TAG, "Replay ended: result %d", (int)res);
+    selector_bridge_set_drop_events(false);
+    s_menu.replay_done = false;
+    enter_menu(now_ms);
+    s_menu.replay_owner = REPLAY_OWNER_NONE;
+    s_menu.result_active = true;
+    s_menu.result_ok = (res == PRESET_MACRO_OK);
+    s_menu.result_cause = res;
+    s_menu.result_ms = now_ms;
+    s_menu.dirty = true;
+    if (owner == REPLAY_OWNER_RUN)
+    {
+        s_menu.report_pending = true;
+        s_menu.report_result = res;
+    }
+}
+
+// Starts the replay of the macro in s_rec_buf. The first key mask is set before the gate opens, so
+// the first reply already carries it (the port applies keys right before each reply). Returns
+// false when the macro has no header (nothing started).
+static bool replay_begin(uint32_t now_ms, replay_owner_t owner)
+{
+    uint8_t mask;
+
+    if (!selector_macro_iter_init(&s_iter, s_rec_buf, s_rec_len))
+    {
+        return false;
+    }
+    ESP_LOGI(TAG, "Replay started (%u bytes)", (unsigned)s_rec_len);
+    menu_set_state(MENU_STATE_REPLAY);
+    s_menu.replay_owner = owner;
+    s_menu.last_central_ms = now_ms;
+    s_menu.result_active = false;
+    s_menu.dirty = true;
+    if (!selector_macro_iter_next(&s_iter, &mask))
+    {
+        replay_end(PRESET_MACRO_OK, now_ms); // no replies in the script: nothing to send
+        return true;
+    }
+    s_menu.replay_mask = mask;
+    s_menu.replay_done = false;
+    emit_keys(mask);
+    selector_bridge_set_drop_events(true); // before the gate opens: noise from before the replay never counts
+    selector_bridge_set_reply_gate(true);
+    return true;
+}
+
+// The /iniciar run ends without a replay (never left the menu): no result page, no reset
+static void run_fail(preset_macro_result_t res)
+{
+    s_menu.run_pending = false;
+    s_menu.report_pending = true;
+    s_menu.report_result = res;
+}
+
+// Starts the replay of a pending /iniciar run once the central shows its start screen. The wait for
+// the reset is the one already running (POPUP_RESET_WAIT_MS), so it is the remaining part of it.
+static void run_service(uint32_t now_ms)
+{
+    if (!s_menu.run_pending)
+    {
+        return;
+    }
+    if (s_menu.state != MENU_STATE_MENU)
+    {
+        run_fail(PRESET_MACRO_UNAVAILABLE);
+    }
+    else if (s_menu.popup_ready)
+    {
+        if (s_menu.store_pending)
+        {
+            return; // not expected under the claim; wait for the store
+        }
+        size_t len = 0;
+        if (preset_server_macro_copy(s_rec_buf, sizeof(s_rec_buf), &len))
+        {
+            s_rec_len = len;
+            s_menu.run_pending = false;
+            if (!replay_begin(now_ms, REPLAY_OWNER_RUN))
+            {
+                run_fail(PRESET_MACRO_UNAVAILABLE);
+            }
+        }
+        else if (++s_menu.run_copy_tries >= RUN_COPY_RETRY_TICKS)
+        {
+            ESP_LOGE(TAG, "macro of the run could not be copied");
+            run_fail(PRESET_MACRO_UNAVAILABLE);
+        }
+    }
+    else if (!s_menu.reset_active)
+    {
+        ESP_LOGW(TAG, "Run: central not ready");
+        run_fail(PRESET_MACRO_NOT_READY);
+    }
+    // else: the reset wait is running, keep waiting
+}
+
+// Hands the result of a /iniciar run to preset_server (bounded lock, retried on later ticks)
+static void report_service(void)
+{
+    if (s_menu.report_pending && preset_server_macro_run_finish(s_menu.report_result))
+    {
+        s_menu.report_pending = false;
+    }
+}
+
+bool selector_tr_menu_run_macro(void)
+{
+    if (!s_started_pub)
+    {
+        return false;
+    }
+    atomic_store(&s_run_req, true);
+    return true;
+}
+
 static void enter_central(uint32_t now_ms)
 {
     ESP_LOGI(TAG, "Central transparent: gate open");
@@ -487,7 +660,21 @@ static void menu_pick(uint32_t now_ms)
     case PAGE_REPLAY:
         if (entry_reason(PAGE_REPLAY) == NULL)
         {
-            ESP_LOGI(TAG, "Macro replay picked: replay not implemented yet (milestone C)");
+            size_t len = 0;
+            if (!preset_server_macro_copy(s_rec_buf, sizeof(s_rec_buf), &len))
+            {
+                break; // lock timeout or the macro is gone: stay in the menu
+            }
+            if (!s_menu.claim_held && !preset_server_selector_claim())
+            {
+                break; // a run started meanwhile: stay in the menu
+            }
+            s_menu.claim_held = true; // kept until the first tick back in the menu: /iniciar answers 409 meanwhile
+            s_rec_len = len;
+            if (!replay_begin(now_ms, REPLAY_OWNER_MENU))
+            {
+                ESP_LOGW(TAG, "Replay not started: the macro has no header");
+            }
         }
         break;
     default:
@@ -509,7 +696,12 @@ static void on_user_keys(uint8_t pressed)
     case MENU_STATE_MENU:
     {
         int count = page_count();
-        if (edges & SELECTOR_KEY_SEL)
+        if (s_menu.result_active && edges != 0)
+        {
+            s_menu.result_active = false; // this key press only dismisses the result page
+            s_menu.dirty = true;
+        }
+        else if (edges & SELECTOR_KEY_SEL)
         {
             s_menu.page = (s_menu.page + 1) % count;
             menu_show(true);
@@ -582,8 +774,16 @@ static void menu_on_msg(void *ctx, selector_dir_t dir, const selector_msg_t *msg
         enter_central(now);
         selector_bridge_emit(SELECTOR_DIR_DOWNSTREAM, msg);
         break;
-    case MENU_STATE_CENTRAL:
     case MENU_STATE_REPLAY:
+        selector_bridge_emit(SELECTOR_DIR_DOWNSTREAM, msg);
+        if (s_menu.replay_done)
+        {
+            // The message that came with the last reply is out (screen, beep) and the popup tracking
+            // has seen it: now the replay ends
+            replay_end(PRESET_MACRO_OK, now);
+        }
+        break;
+    case MENU_STATE_CENTRAL:
     default:
         selector_bridge_emit(SELECTOR_DIR_DOWNSTREAM, msg);
         break;
@@ -592,7 +792,8 @@ static void menu_on_msg(void *ctx, selector_dir_t dir, const selector_msg_t *msg
 
 // A reply went to the central. While recording, counted replies feed the encoder with the key mask
 // that was actually sent (the key that picked the entry is masked by handback_mask, so it is not
-// recorded).
+// recorded). While replaying, reply k sets the key mask of reply k+1; when the script has no more
+// replies, the replay succeeded.
 static void menu_on_reply(void *ctx, uint8_t keys, bool counted)
 {
     (void)ctx;
@@ -600,6 +801,42 @@ static void menu_on_reply(void *ctx, uint8_t keys, bool counted)
     {
         ESP_LOGW(TAG, "Recording buffer full: recording ends");
         enter_menu(selector_bridge_now_ms());
+    }
+    else if (s_menu.state == MENU_STATE_REPLAY && counted && !s_menu.replay_done)
+    {
+        uint8_t mask;
+        if (keys != s_menu.replay_mask)
+        {
+            // A mask went missing (queue full) or arrived late: the central did not see the macro
+            // as recorded, so the run must not report success
+            ESP_LOGW(TAG, "Replay failed: reply carried keys 0x%02X, expected 0x%02X", (unsigned)keys,
+                     (unsigned)s_menu.replay_mask);
+            replay_end(PRESET_MACRO_PROTOCOL, selector_bridge_now_ms());
+        }
+        else if (selector_macro_iter_next(&s_iter, &mask))
+        {
+            s_menu.replay_mask = mask;
+            emit_keys(mask);
+        }
+        else
+        {
+            // The script is done: no more replies go out. The message of this same event follows
+            // at once (menu_on_msg), is forwarded, and ends the replay.
+            s_menu.replay_done = true;
+            selector_bridge_set_reply_gate(false);
+        }
+    }
+}
+
+// The central sent a corrupt frame (framing, checksum, length, cut off): a replay fails. Frames
+// that are well formed but not for the Prog (other id, unknown function) never get here.
+static void menu_on_drop(void *ctx, selector_side_t side, selector_drop_reason_t reason)
+{
+    (void)ctx;
+    if (s_menu.state == MENU_STATE_REPLAY && !s_menu.replay_done && side == SELECTOR_SIDE_CENTRAL)
+    {
+        ESP_LOGW(TAG, "Replay failed: corrupt frame from the central (reason %d)", (int)reason);
+        replay_end(PRESET_MACRO_PROTOCOL, selector_bridge_now_ms());
     }
 }
 
@@ -620,6 +857,8 @@ static void menu_on_mode(void *ctx, bool central_slave)
     (void)ctx;
     if (central_slave)
     {
+        // TODO(master mode): a replay running here would be abandoned without replay_end(), leaving
+        // a /iniciar run at status 1. Finish it first when master mode exists (never sent today).
         if (s_menu.recording)
         {
             recording_finish(); // unreachable until master mode exists
@@ -644,12 +883,19 @@ static void menu_on_tick(void *ctx, uint32_t now_ms)
         store_try();
     }
     claim_service();
+    if (atomic_exchange(&s_run_req, false))
+    {
+        s_menu.run_pending = true;
+        s_menu.run_copy_tries = 0;
+    }
+    report_service();
 
     if (!s_menu.started)
     {
         // Boot: the menu shows and the gate closes, the reset procedure waits for the pop-up.
         // (The gate is open from the port start until this first tick, a few milliseconds.)
         s_menu.started = true;
+        s_started_pub = true;
         selector_bridge_set_reply_gate(false);
         reset_begin(now_ms);
     }
@@ -672,8 +918,12 @@ static void menu_on_tick(void *ctx, uint32_t now_ms)
     }
     // Exit rules. Both values confirmed on the bench (open questions D2, F8): 3 s of central silence,
     // 3 s with no key pressed (also while recording).
-    if ((s_menu.state == MENU_STATE_CENTRAL || s_menu.state == MENU_STATE_REPLAY) &&
-        (uint32_t)(now_ms - s_menu.last_central_ms) >= CENTRAL_SILENCE_MS)
+    if (s_menu.state == MENU_STATE_REPLAY && (uint32_t)(now_ms - s_menu.last_central_ms) >= CENTRAL_SILENCE_MS)
+    {
+        replay_end(PRESET_MACRO_SILENT, now_ms); // the only time-based failure of a replay
+    }
+    else if (s_menu.state == MENU_STATE_CENTRAL &&
+             (uint32_t)(now_ms - s_menu.last_central_ms) >= CENTRAL_SILENCE_MS)
     {
         enter_menu(now_ms);
     }
@@ -693,7 +943,16 @@ static void menu_on_tick(void *ctx, uint32_t now_ms)
             s_menu.capture = CAPTURE_NONE; // a failed capture must not stay armed
             popup_clear();
         }
+        if (s_menu.result_active && (uint32_t)(now_ms - s_menu.result_ms) >= MACRO_RESULT_SHOW_MS)
+        {
+            s_menu.result_active = false;
+            s_menu.dirty = true;
+        }
+    }
+    run_service(now_ms); // outside the guard: a run that finds the menu gone fails instead of waiting
 
+    if (s_menu.state == MENU_STATE_MENU)
+    {
         bool entry_page = s_menu.page >= PAGE_ENTER && s_menu.page < PAGE_IFACE_FIRST;
         uint32_t poll_ms = entry_page ? ENTRY_POLL_MS : NET_POLL_MS;
         if (s_menu.dirty)
@@ -716,8 +975,9 @@ static const selector_translator_t s_menu_translator = {
     .on_link = menu_on_link,
     .on_mode = menu_on_mode,
     .on_tick = menu_on_tick,
-    .on_reply = menu_on_reply, // recording (milestone B); replay (milestone C) will use it too
+    .on_reply = menu_on_reply, // recording and replay
     .gate_closed_at_start = true, // the menu keeps the central silent from the first frame
+    .on_drop = menu_on_drop,      // replay: corrupt frames from the central
 };
 
 const selector_translator_t *selector_tr_menu(void)

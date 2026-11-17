@@ -26,12 +26,16 @@ typedef struct
     // Every SELECTOR_BRIDGE_TICK_MS
     void (*on_tick)(void *ctx, uint32_t now_ms);
     // The panel port replied to the central. keys is the key mask the reply carried (what the central
-    // saw), counted is true when the reply answered a frame of function 'S' or '?'. Not called while
-    // the reply gate is closed.
+    // saw), counted is always true (every reply carries the key state). Not called while
+    // the reply gate is closed. Called immediately before on_msg for the message of the frame that was
+    // answered, from the same event.
     void (*on_reply)(void *ctx, uint8_t keys, bool counted);
     // true: the panel port starts with its reply gate closed (the translator keeps the central
     // silent from the first frame). false (default): open, as before.
     bool gate_closed_at_start;
+    // The panel port dropped a corrupt frame from the central (framing, checksum, length, cut-off
+    // frame; see selector_drop_is_corruption()). Only sent while selector_bridge_set_drop_events(true).
+    void (*on_drop)(void *ctx, selector_side_t side, selector_drop_reason_t reason);
 } selector_translator_t;
 
 #define SELECTOR_BRIDGE_TICK_MS 10
@@ -52,6 +56,10 @@ void selector_bridge_emit(selector_dir_t dir, const selector_msg_t *msg);
 // but its frames still reach the translator (the panel link stays down while closed). Only call it from the translator
 // callbacks.
 void selector_bridge_set_reply_gate(bool open);
+
+// Turns the on_drop events on or off (off by default; a replay turns them on before it opens the
+// reply gate and off when it ends). Only call it from the translator callbacks.
+void selector_bridge_set_drop_events(bool on);
 
 // Milliseconds since boot (wraps at 2^32, compare with subtraction).
 uint32_t selector_bridge_now_ms(void);

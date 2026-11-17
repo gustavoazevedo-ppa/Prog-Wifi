@@ -115,6 +115,10 @@ uint8_t selector_checksum(const uint8_t *frame, size_t len);
 // Checks the checksum against the known-good vector and a poll frame round trip.
 bool selector_selftest(void);
 
+// True for the drop reasons that mean line corruption (framing, checksum, length, cut-off frame).
+// False for a well-formed frame that is not for the Prog (BAD_ID, UNKNOWN_FUNCTION) and for NONE.
+bool selector_drop_is_corruption(selector_drop_reason_t reason);
+
 // Byte-fed frame parser. Bounded: size is range checked before waiting for bytes, bad
 // frames resync on the next start byte, partial frames time out.
 typedef struct
@@ -133,6 +137,11 @@ void selector_framer_init(selector_framer_t *f, uint8_t id, uint32_t partial_tim
 // call selector_framer_next() until it returns false (a resync may expose more frames).
 bool selector_framer_feed(selector_framer_t *f, uint8_t byte, uint32_t now_ms, selector_frame_t *out);
 bool selector_framer_next(selector_framer_t *f, selector_frame_t *out);
+
+// Counts a cut-off frame as SELECTOR_DROP_PARTIAL_TIMEOUT once no byte arrived for the partial
+// timeout. Call it when no byte was read, so a frame cut off before a silence is not found only
+// when the next byte comes.
+void selector_framer_poll_timeout(selector_framer_t *f, uint32_t now_ms);
 
 // Decodes a valid frame. For a short 'S' frame the text is written over *base (the previous
 // screen, or spaces when base is NULL), as the real selector is assumed to do (unverified).

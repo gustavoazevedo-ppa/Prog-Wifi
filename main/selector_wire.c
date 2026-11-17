@@ -252,7 +252,48 @@ bool selector_selftest(void)
     {
         return false;
     }
+    if (!selector_drop_is_corruption(SELECTOR_DROP_BAD_CHECKSUM) ||
+        selector_drop_is_corruption(SELECTOR_DROP_UNKNOWN_FUNCTION) ||
+        selector_drop_is_corruption(SELECTOR_DROP_BAD_ID))
+    {
+        return false;
+    }
+
+    // A cut-off frame followed by silence is counted by the timeout poll, once
+    selector_framer_t fr;
+    selector_frame_t fo;
+    selector_framer_init(&fr, SELECTOR_ID, 25);
+    if (selector_framer_feed(&fr, SELECTOR_START, 100, &fo) || selector_framer_feed(&fr, 0x08, 101, &fo))
+    {
+        return false;
+    }
+    selector_framer_poll_timeout(&fr, 120);
+    if (fr.drops[SELECTOR_DROP_PARTIAL_TIMEOUT] != 0 || fr.count != 2)
+    {
+        return false;
+    }
+    selector_framer_poll_timeout(&fr, 130);
+    selector_framer_poll_timeout(&fr, 200);
+    if (fr.drops[SELECTOR_DROP_PARTIAL_TIMEOUT] != 1 || fr.count != 0)
+    {
+        return false;
+    }
     return true;
+}
+
+bool selector_drop_is_corruption(selector_drop_reason_t reason)
+{
+    switch (reason)
+    {
+    case SELECTOR_DROP_BAD_SIZE:
+    case SELECTOR_DROP_BAD_STOP:
+    case SELECTOR_DROP_BAD_CHECKSUM:
+    case SELECTOR_DROP_BAD_LENGTH:
+    case SELECTOR_DROP_PARTIAL_TIMEOUT:
+        return true;
+    default:
+        return false;
+    }
 }
 
 void selector_framer_init(selector_framer_t *f, uint8_t id, uint32_t partial_timeout_ms)
@@ -333,6 +374,15 @@ bool selector_framer_next(selector_framer_t *f, selector_frame_t *out)
         return true;
     }
     return false;
+}
+
+void selector_framer_poll_timeout(selector_framer_t *f, uint32_t now_ms)
+{
+    if (f->count > 0 && (uint32_t)(now_ms - f->last_byte_ms) > f->partial_timeout_ms)
+    {
+        framer_drop(f, SELECTOR_DROP_PARTIAL_TIMEOUT);
+        f->count = 0;
+    }
 }
 
 bool selector_framer_feed(selector_framer_t *f, uint8_t byte, uint32_t now_ms, selector_frame_t *out)

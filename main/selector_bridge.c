@@ -39,7 +39,7 @@
 
 #define BRIDGE_TASK_STACK 4096
 #define BRIDGE_TASK_PRIO 4
-// Each central frame can queue a reply event and a message event, so this is deeper than the port queues
+// Both ports and drop events share this queue, so it is deeper than the port queues
 #define BRIDGE_IN_DEPTH 16
 #define PORT_IN_DEPTH 8
 
@@ -89,6 +89,11 @@ void selector_bridge_set_reply_gate(bool open)
     selector_port_set_reply_gate(s_panel, open);
 }
 
+void selector_bridge_set_drop_events(bool on)
+{
+    selector_port_set_drop_events(s_panel, on);
+}
+
 // ─── Identity translator ────────────────────────────────────────────────────
 
 static void identity_on_msg(void *ctx, selector_dir_t dir, const selector_msg_t *msg)
@@ -118,6 +123,12 @@ static void bridge_dispatch(const selector_evt_t *evt)
     switch (evt->type)
     {
     case SELECTOR_EVT_MSG:
+        // A frame the panel port replied to: the reply and its message are one step, so a
+        // translator that ends on the reply sees the message right after, with nothing in between
+        if (evt->replied && s_tr->on_reply != NULL)
+        {
+            s_tr->on_reply(s_tr->ctx, evt->keys, evt->counted);
+        }
         if (s_tr->on_msg != NULL)
         {
             s_tr->on_msg(s_tr->ctx, evt->dir, &evt->msg);
@@ -129,16 +140,16 @@ static void bridge_dispatch(const selector_evt_t *evt)
             s_tr->on_link(s_tr->ctx, evt->side, evt->up);
         }
         break;
-    case SELECTOR_EVT_REPLY:
-        if (s_tr->on_reply != NULL)
-        {
-            s_tr->on_reply(s_tr->ctx, evt->keys, evt->counted);
-        }
-        break;
     case SELECTOR_EVT_MODE:
         if (s_tr->on_mode != NULL)
         {
             s_tr->on_mode(s_tr->ctx, evt->up);
+        }
+        break;
+    case SELECTOR_EVT_DROP:
+        if (s_tr->on_drop != NULL)
+        {
+            s_tr->on_drop(s_tr->ctx, evt->side, evt->reason);
         }
         break;
     default:

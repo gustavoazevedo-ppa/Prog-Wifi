@@ -66,7 +66,6 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 
 | ID | Question | Blocks | How |
 |---|---|---|---|
-| F7 | Which dropped-frame reasons must fail a replay? The design counts framing, checksum and length errors and ignores unknown functions (jig / BLE functions are dropped by design). | The success rule. | Review the drop reasons in `selector_wire` and a tap of a real central. |
 | F9 | `POST /iniciar` is refused with 409 while the Prog is in transparent mode, for every run and not only for macros. Is that acceptable for normal preset runs? | The acceptance rule in `preset_server`. | Decided for now, confirm with the Stinger team. |
 
 ---
@@ -104,7 +103,8 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 | F2: pop-up capture rule | Confirmed OK on the bench: first screen when the central goes from absent to present (boot included), or after an exit the first screen that differs from the last one forwarded |
 | F4: central poll rate | Steady, so counting polls for macro timing is valid. Wait-for-screen is not needed for now |
 | F8: does the 3 s key idle time get in the way while recording? | No (bench). Keep `CENTRAL_KEY_IDLE_MS` at 3000 |
-| F3: do the replies to `'B'` and `'L'` carry key state? | Yes (project owner): every reply carries the pressed keys in its payload, so every reply the panel port sends counts as a poll for macros, whatever the function. The Milestone B code still counts only `'S'` and `'?'`: change it in milestone C. Macros recorded before that change were counted the old way and must be recorded again |
+| F3: do the replies to `'B'` and `'L'` carry key state? | Yes (project owner): every reply carries the pressed keys in its payload, so every reply the panel port sends counts as a poll for macros, whatever the function. Macros recorded before that change were counted the old way and must be recorded again |
 | F5: press and release length each central needs | Varies per central. Not a concern for recorded macros, because the macro holds the values seen on the central it was recorded on. Only hand-edited macros need care |
 | F6: does the central finish its last operation during the trailing wait? | Yes (project owner) |
+| F7: which dropped-frame reasons fail a replay? | Bad size, bad stop byte, bad checksum, bad length and a frame cut off by the partial timeout fail it (`selector_drop_is_corruption()`). A frame for another id and an unknown function (jig / BLE) do not. Drop events are sent only while a replay runs; a drop whose event the bridge queue did not accept stays pending and is sent again. Still to confirm on a real central tap |
 | Version marker in the macro format | Decided: none. A change in what the syntax means (as the F3 poll count did) is handled by recording the macros again. Unknown tokens are still rejected, so new token types stay safe for old firmware |

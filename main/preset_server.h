@@ -111,4 +111,22 @@ bool preset_server_macro_copy(uint8_t *out, size_t cap, size_t *len);
 /* Validates, then stores a recorded macro (source "recorded"). False = invalid or lock timeout. */
 bool preset_server_macro_store(const uint8_t *data, size_t len);
 
+/* Result of a macro replay started by POST /iniciar (reported by the menu translator). */
+typedef enum
+{
+    PRESET_MACRO_OK = 0,
+    PRESET_MACRO_NOT_READY,   /* central not back on its start screen in time */
+    PRESET_MACRO_SILENT,      /* central stopped talking during the replay */
+    PRESET_MACRO_PROTOCOL,    /* framing / checksum / length error during the replay */
+    PRESET_MACRO_UNAVAILABLE, /* selector bridge not running, or the macro could not be read */
+} preset_macro_result_t;
+
+/* Like preset_server_run_active() but for the bridge task: the lock is taken with a
+ * PRESET_MACRO_LOCK_MS timeout. False = lock timeout (*active untouched), keep the last answer. */
+bool preset_server_run_active_try(bool *active);
+
+/* Ends the running run: status 2 for OK, 3 plus one short message otherwise. Does nothing when
+ * no run is running. False = lock timeout (5 ms), call again; true = handled. */
+bool preset_server_macro_run_finish(preset_macro_result_t r);
+
 #endif // PRESET_SERVER_H

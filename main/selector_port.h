@@ -31,10 +31,10 @@ typedef enum
 
 typedef enum
 {
-    SELECTOR_EVT_MSG = 0, // a message: dir and msg are valid
+    SELECTOR_EVT_MSG = 0, // a message: dir and msg are valid; from the panel port also replied, keys and counted
     SELECTOR_EVT_LINK,    // link change: side and up are valid
     SELECTOR_EVT_MODE,    // central mode change (planned, master mode): up = central is slave
-    SELECTOR_EVT_REPLY    // panel port sent a reply to the central: keys and counted are valid
+    SELECTOR_EVT_DROP     // panel port dropped a corrupt frame (only while drop events are on): side and reason are valid
 } selector_evt_type_t;
 
 // Port to bridge event
@@ -44,9 +44,12 @@ typedef struct
     selector_side_t side;
     selector_dir_t dir;
     bool up;
-    uint8_t keys;  // SELECTOR_EVT_REPLY: key mask the reply carried (what the central saw)
-    bool counted;  // SELECTOR_EVT_REPLY: the reply counts as a poll (always true: every reply carries key state)
+    bool replied;  // SELECTOR_EVT_MSG from the panel port: the Prog replied to this frame. The bridge calls on_reply
+                   // and then on_msg from this one event, so the reply and its message are never separated
+    uint8_t keys;  // replied: key mask the reply carried (what the central saw)
+    bool counted;  // replied: the reply counts as a poll (always true: every reply carries key state)
     selector_msg_t msg;
+    selector_drop_reason_t reason; // SELECTOR_EVT_DROP
 } selector_evt_t;
 
 typedef struct
@@ -88,11 +91,18 @@ selector_port_t *selector_port_start(const selector_port_cfg_t *cfg);
 void selector_port_get_stats(const selector_port_t *port, selector_port_stats_t *out);
 
 // Selector role only. Closed: valid central frames are still sent to the
-// bridge, but no reply goes out, no SELECTOR_EVT_REPLY is generated and the link stays down (selector
+// bridge, but no reply goes out, no reply is reported (replied stays false) and the link stays down (selector
 // role link = open session: up with the first reply after the gate opens, down when the gate
 // closes or no valid frame arrives for link_timeout_ms). Open by default.
 // Safe to call from another task (single byte flag).
 void selector_port_set_reply_gate(selector_port_t *port, bool open);
+
+// Selector role only. On: corruption drops of the central's frames are sent as SELECTOR_EVT_DROP
+// (a replay is running). Off (default): the drops are only counted. A drop counts for the state
+// the flag had when the pass that found it began. A drop whose event the bridge queue did not accept
+// stays pending and is sent again on the next pass. A drop found while a frame is being recovered is
+// queued before that frame's events. Safe to call from another task (single byte flag).
+void selector_port_set_drop_events(selector_port_t *port, bool on);
 
 // Logs valid frames (hex, INFO level) on all ports while enabled. A frame identical to the
 // previous one in the same direction on the same port is skipped, and the next different frame

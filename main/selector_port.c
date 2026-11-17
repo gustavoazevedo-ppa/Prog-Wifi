@@ -27,6 +27,7 @@ struct selector_port
     uint32_t decode_drops[SELECTOR_DROP_REASON_COUNT];
     uint32_t drops_logged;
     uint32_t last_drop_log_ms;
+    uint32_t drops_reported[SELECTOR_DROP_REASON_COUNT]; // panel role: corruption drops already seen by panel_report_drops()
     bool link_up;
     uint32_t last_valid_ms;
 
@@ -35,6 +36,8 @@ struct selector_port
     selector_screen_t last_screen;
     // Reply gate: written by the bridge task, read by the port task. A single byte, so no lock.
     volatile bool reply_gate_open;
+    // Drop events wanted (a replay is running): written by the bridge task, sampled by the port task
+    volatile bool drop_events;
 
     // Host role (faces the real selector)
     selector_screen_t screen;
@@ -152,12 +155,15 @@ static esp_err_t port_uart_init(const selector_port_cfg_t *cfg)
     return err;
 }
 
-static void port_send_evt(selector_port_t *p, const selector_evt_t *evt)
+// Returns false when the bridge queue did not take the event (zero wait)
+static bool port_send_evt(selector_port_t *p, const selector_evt_t *evt)
 {
     if (xQueueSend(p->cfg.to_bridge, evt, 0) != pdTRUE)
     {
         p->stats.queue_full++;
+        return false;
     }
+    return true;
 }
 
 static selector_side_t port_side(const selector_port_t *p)
@@ -220,6 +226,14 @@ void selector_port_set_reply_gate(selector_port_t *p, bool open)
     if (p != NULL && p->cfg.role == SELECTOR_ROLE_SELECTOR)
     {
         p->reply_gate_open = open;
+    }
+}
+
+void selector_port_set_drop_events(selector_port_t *p, bool on)
+{
+    if (p != NULL && p->cfg.role == SELECTOR_ROLE_SELECTOR)
+    {
+        p->drop_events = on;
     }
 }
 
@@ -316,19 +330,55 @@ static void panel_handle_frame(selector_port_t *p, const selector_frame_t *frame
     if (replied)
     {
         // Which key state the central just saw. Every reply carries the key state, whatever the
-        // function, so every reply counts as a poll for macros (open questions F3, resolved).
-        evt.type = SELECTOR_EVT_REPLY;
-        evt.side = SELECTOR_SIDE_CENTRAL;
+        // function, so every reply counts as a poll for macros (open questions F3, resolved). It
+        // travels in the same event as the message, so the bridge handles both as one step.
+        evt.replied = true;
         evt.keys = reply_keys;
         evt.counted = true;
-        port_send_evt(p, &evt);
-        memset(&evt, 0, sizeof(evt));
     }
     evt.type = SELECTOR_EVT_MSG;
     evt.side = SELECTOR_SIDE_CENTRAL;
     evt.dir = SELECTOR_DIR_DOWNSTREAM;
     evt.msg = msg;
     port_send_evt(p, &evt);
+}
+
+// Turns new corruption drops into one SELECTOR_EVT_DROP per reason and call, so a replay can
+// fail on them. want is the drop-event flag sampled once at the start of the pass, before the
+// bytes of the pass were fed: a drop counts for the replay only when the flag was already set
+// then, so noise from before the replay cannot fail it and the flag clearing at its end cannot
+// swallow a drop. Without the flag the counters are only caught up and no event is sent, so line
+// noise in the menu or the central's screens cannot load the bridge queue. A drop is marked as
+// reported only when the bridge queue took its event; otherwise it stays pending (sticky) and is
+// sent again by the next call.
+static void panel_report_drops(selector_port_t *p, bool want)
+{
+    for (int i = 1; i < SELECTOR_DROP_REASON_COUNT; i++)
+    {
+        selector_drop_reason_t r = (selector_drop_reason_t)i;
+        if (!selector_drop_is_corruption(r))
+        {
+            continue;
+        }
+        uint32_t cur = p->framer.drops[i] + p->decode_drops[i];
+        if (cur == p->drops_reported[i])
+        {
+            continue;
+        }
+        if (want)
+        {
+            selector_evt_t evt;
+            memset(&evt, 0, sizeof(evt));
+            evt.type = SELECTOR_EVT_DROP;
+            evt.side = SELECTOR_SIDE_CENTRAL;
+            evt.reason = r;
+            if (!port_send_evt(p, &evt))
+            {
+                continue; // queue full: still pending, tried again on the next pass
+            }
+        }
+        p->drops_reported[i] = cur;
+    }
 }
 
 static void panel_task(void *arg)
@@ -341,10 +391,14 @@ static void panel_task(void *arg)
     {
         int n = uart_read_bytes(p->cfg.uart, &byte, 1, pdMS_TO_TICKS(PORT_READ_TIMEOUT_MS));
         uint32_t now = now_ms();
+        bool want_drops = p->drop_events; // sampled before anything of this pass is parsed
 
         if (n == 1)
         {
             bool got = selector_framer_feed(&p->framer, byte, now, &frame);
+            // Corruption found while resynchronizing is queued before the recovered frame's events,
+            // so a replay that ends on that frame has already seen it
+            panel_report_drops(p, want_drops);
             while (got)
             {
                 panel_handle_frame(p, &frame, now);
@@ -354,9 +408,11 @@ static void panel_task(void *arg)
         else
         {
             panel_drain(p);
+            selector_framer_poll_timeout(&p->framer, now); // a frame cut off before a silence
         }
 
         port_check_drops(p, now);
+        panel_report_drops(p, want_drops);
         // Session over: the gate was closed (flag written by the bridge task, polled here so the
         // event comes from this task), or no valid frame for the link timeout
         if (p->link_up && (!p->reply_gate_open || (uint32_t)(now - p->last_valid_ms) > p->cfg.link_timeout_ms))

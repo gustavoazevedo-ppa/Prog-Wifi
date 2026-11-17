@@ -485,8 +485,7 @@ macro from a preset. It can be edited with any text editor and uploaded again.
     implicitly.
 - **Poll (reply) count:** every reply the panel port sends to the central while the reply gate is
   open, whatever the function, because every reply carries the key state (`docs/open-questions.md`,
-  F3). The Milestone B code still counts only `'S'` and `'?'`. It changes in milestone C, and macros
-  recorded before that must be recorded again.
+  F3). Macros recorded before that rule was applied must be recorded again.
 - **Size:** at most `PRESET_BIN_MAX` (2048 bytes, the preset scratchpad). A press and release with
   waits is about 8 bytes at a 100 ms poll, so roughly 250 key presses fit.
 - **Validation** runs over the whole file when it is downloaded. A macro with a character that is not
@@ -585,20 +584,37 @@ Transitions:
 - **Start:** from `[REPLAY MACRO]` (a valid macro in the scratchpad, "ready") or from a macro file
   downloaded through `POST /iniciar`, in both cases with no check against the central model.
 - **Mechanism:** the translator sets the first key mask in the panel port's cache, opens the gate, and
-  on every counted reply event steps the script and sets the mask for the next reply. The central's
+  on every counted reply steps the script and sets the mask for the next reply. A reply that carried a
+  mask other than the expected one (a key update lost in a full queue) fails the replay with
+  `macro: protocol error`. The reply and the message of the frame it answered travel in one bridge
+  event and are handled back to back. The central's
   screens still go to the real selector. The real selector's keys are dropped, and there is no abort
   during a replay.
 - **Failure:** the central sends no valid frame for `CENTRAL_SILENCE_MS`, or the panel port drops a
   frame because of a framing, checksum or length error (unknown functions do not count, because the
-  selector role drops jig / BLE functions by design).
+  selector role drops jig / BLE functions by design). Implemented mapping (`selector_drop_is_corruption()`):
+  bad size, bad stop byte, bad checksum, bad length and a frame cut off by the partial timeout fail the
+  replay. A frame for another id and an unknown function do not. Drop events are switched on only
+  while a replay runs (before its gate opens), so noise from before the replay never fails it. A cut-off
+  frame is counted by the panel task's timeout poll even when no further byte follows. A drop whose
+  event the bridge queue did not take stays pending and is sent again, and a drop found while a frame
+  is recovered is queued before that frame's events.
 - **Success:** the whole script is sent without a failure. It is judged when the last number has been
-  consumed, before the reset procedure.
+  consumed: the gate closes at once (no further reply goes out), the central's message that came with
+  that last reply is forwarded to the real selector, and the replay ends, before the reset procedure.
+  There is no limit on the replay duration
+  other than the silence rule.
 - **After the run:** the translator returns to `MENU` and the reset procedure starts. The selector
   shows `MACRO OK` or `MACRO FAIL` as page 0 for `MACRO_RESULT_SHOW_MS` (5000) or until a key press,
-  then the usual page 0. If the reset times out afterwards, the run result does not change.
+  then the usual page 0. If the reset times out afterwards, the run result does not change. The second
+  line is REPLAY DONE, CENTRAL SILENT or PROTOCOL ERROR.
 - **Status:** a run started by `/iniciar` is a normal run. `GET /status` shows `status: 1` while the
   macro replays, then `2` on success or `3` with the reason in `message` on failure. The shape of
-  `/status` does not change.
+  `/status` does not change. Messages: `macro: central not ready`, `macro: central went silent`,
+  `macro: protocol error`, `macro: selector unavailable`. A run started by `/iniciar` waits for the
+  rest of the reset (`POPUP_RESET_WAIT_MS` counted from the last arrival in the menu) for the central
+  to show its start screen, and fails with `macro: central not ready` if it does not. A replay started
+  from `[REPLAY MACRO]` holds the selector claim (`/iniciar` answers 409) and does not touch `/status`.
 
 ### Storage, web page and `/iniciar`
 
@@ -622,8 +638,8 @@ Transitions:
 | Piece | Change |
 |---|---|
 | `selector_macro.c/.h` (new, pure C, no ESP-IDF) | validate, run-length encoder, script iterator |
-| `selector_port` | reply gate; a per-reply event with the key mask sent (every reply counts, see F3) |
-| `selector_bridge` | route the reply event to the translator |
+| `selector_port` | reply gate; the key mask sent rides on the message event of the frame answered (every reply counts, see F3) |
+| `selector_bridge` | route the reply to the translator (`on_reply`, then `on_msg` from the same event) |
 | `selector_tr_menu` | states, menu entries, pop-up store and reset procedure, recording and replay (split into its own translator if it grows) |
 | `preset_server` | macro fork in the fetch, accessors for the scratchpad, replay hand-off in place of the simulated run, the 409 check |
 | `main/index.html` | raw-text download |

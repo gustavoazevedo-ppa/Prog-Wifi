@@ -790,6 +790,51 @@ bool preset_server_macro_store(const uint8_t *data, size_t len)
     return true;
 }
 
+bool preset_server_run_active_try(bool *active)
+{
+    if (s_lock == NULL || xSemaphoreTake(s_lock, pdMS_TO_TICKS(PRESET_MACRO_LOCK_MS)) != pdTRUE)
+    {
+        return false;
+    }
+    *active = s_state.status == ST_RUNNING;
+    xSemaphoreGive(s_lock);
+    return true;
+}
+
+bool preset_server_macro_run_finish(preset_macro_result_t r)
+{
+    if (s_lock == NULL || xSemaphoreTake(s_lock, pdMS_TO_TICKS(PRESET_MACRO_LOCK_MS)) != pdTRUE)
+    {
+        return false;
+    }
+    bool handled = s_state.status == ST_RUNNING;
+    if (handled)
+    {
+        s_state.msg_count = 0;
+        if (r == PRESET_MACRO_OK)
+        {
+            s_state.status = ST_OK;
+        }
+        else
+        {
+            static const char *const texts[] = {
+                [PRESET_MACRO_NOT_READY] = "macro: central not ready",
+                [PRESET_MACRO_SILENT] = "macro: central went silent",
+                [PRESET_MACRO_PROTOCOL] = "macro: protocol error",
+                [PRESET_MACRO_UNAVAILABLE] = "macro: selector unavailable",
+            };
+            s_state.status = ST_ERROR;
+            add_msg(&s_state, "%s", texts[(int)r >= PRESET_MACRO_NOT_READY && (int)r <= PRESET_MACRO_UNAVAILABLE ? r : PRESET_MACRO_UNAVAILABLE]);
+        }
+    }
+    xSemaphoreGive(s_lock);
+    if (handled)
+    {
+        ESP_LOGI(TAG, "Macro run finished: result %d", (int)r);
+    }
+    return true;
+}
+
 /* ─── Simulated run ──────────────────────────────────────────────────────── */
 static void sim_run_done_cb(void *arg)
 {
@@ -1198,12 +1243,20 @@ static void run_job(job_t *job)
     state_commit(&st);
     if (is_macro)
     {
-        /* MILESTONE C PLACEHOLDER: replay engine goes here; today the macro is only stored and the
-         * run finishes via the simulated timer (status 2 does not mean "replayed"). */
-        esp_timer_stop(s_sim_timer); /* ignore error if not running */
-        esp_timer_start_once(s_sim_timer, (uint64_t)PRESET_SIM_RUN_MS * 1000ULL);
-        ESP_LOGI(TAG, "run %.0f: macro stored (%d bytes), replay not implemented (milestone C), simulated finish",
-                 st.id_num, nbytes);
+        /* The menu translator replays the stored macro and reports the result through
+         * preset_server_macro_run_finish(). Requested after state_commit(): a very early result
+         * is never overwritten by the local copy of the state. */
+        if (!selector_tr_menu_run_macro())
+        {
+            st.status = ST_ERROR;
+            st.msg_count = 0;
+            add_msg(&st, "macro: selector unavailable");
+            state_commit(&st);
+            ESP_LOGW(TAG, "run %.0f failed: selector bridge not running", st.id_num);
+            job_finish(job, "500 Internal Server Error", &st);
+            return;
+        }
+        ESP_LOGI(TAG, "run %.0f: macro stored (%d bytes), replay requested", st.id_num, nbytes);
     }
     else
     {

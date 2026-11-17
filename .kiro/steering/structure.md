@@ -32,8 +32,8 @@ build/                  Build output (generated)
 | `log_server` | Read-only TCP log console (port 2323), opened for a limited window on request |
 | `selector_wire`, `selector_keys`, `selector_macro` | Selector protocol framer / codec, key edge helper, and macro file validator / encoder / script iterator (pure C, no ESP-IDF dependency) |
 | `selector_port` | One UART per instance: UART2 plays the selector toward the central (GPIO17 TX, GPIO16 RX), UART1 plays the host toward the real selector (GPIO25 TX, GPIO26 RX) |
-| `selector_bridge` | Queues, bridge task and translator contract (including the panel reply gate and reply events); drop counters and frame tap |
-| `selector_tr_menu` | Translator: Prog menu (project / version, `[ENTER CENTRAL]` / `[RECORD MACRO]` / `[REPLAY MACRO]` entries, Wi-Fi / Ethernet IP and MAC pages) with the reply gate closed, central screens pass through after `[ENTER CENTRAL]`; records macros (`[RECORD MACRO]`), `[REPLAY MACRO]` is inert; while the menu is transparent, a claim in `preset_server` (`preset_server_selector_claim()`) makes `/iniciar` answer 409 |
+| `selector_bridge` | Queues, bridge task and translator contract (including the panel reply gate, replies reported with the frame's message, and drop events); drop counters and frame tap |
+| `selector_tr_menu` | Translator: Prog menu (project / version, `[ENTER CENTRAL]` / `[RECORD MACRO]` / `[REPLAY MACRO]` entries, Wi-Fi / Ethernet IP and MAC pages) with the reply gate closed, central screens pass through after `[ENTER CENTRAL]`; records macros (`[RECORD MACRO]`), `[REPLAY MACRO]` replays the stored macro (also used by `/iniciar` runs, result reported through `preset_server_macro_run_finish()`); while the menu is transparent, a claim in `preset_server` (`preset_server_selector_claim()`) makes `/iniciar` answer 409 |
 | `device_info.h` | Device identification constants |
 | `index.html` | Static device-info page, embedded in flash |
 | `ota_decrypt_priv.pem` | Embedded OTA decryption key (secret) |

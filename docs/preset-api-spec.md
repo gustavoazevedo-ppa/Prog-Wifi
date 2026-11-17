@@ -114,7 +114,7 @@ If none exist, the start fails (see error handling, still to be defined).
 - The same hook and the same `exemplo.conf` name and location order are used. The content is what differs: a macro is **raw text** that starts with `#`, not hex. A preset is hex digits only, so the first non-blank character (after an optional BOM) tells them apart.
 - Format: a header line (`#` plus the central's start screen, for example `#MODEL X/V1.2`), then tokens (blanks, tabs and line breaks between tokens are optional, so `3P2p` reads like `3 P 2 p`; two numbers split by a blank add up). A number means "this many central polls with the current keys". A letter is a key event: `M` (minus), `P` (plus), `O` (OK), `S` (SEL), uppercase for press and lowercase for release. Example: `3 P 2 p 4 S 1 s 10 O 2 o 30`.
 - Limits: 2048 bytes in total. The whole file is validated on download. An invalid macro returns `500`, `status: 3`, `message: ["preset file is not a valid macro"]`, and the previous scratchpad content is kept. A valid macro is stored from the `#` on (a BOM and blanks before it are dropped).
-- The Prog replays the macro as soon as it is downloaded, ignoring the keys of the real selector, and shows the central's screens. `GET /status` reports `status: 1` while it replays, then `2` when the whole script was sent without protocol errors or unexpected central silence, or `3` with the cause in `message`. The Prog does not compare the macro with the central model.
+- The Prog replays the macro as soon as it is downloaded, ignoring the keys of the real selector, and shows the central's screens. `GET /status` reports `status: 1` while it replays, then `2` when the whole script was sent without protocol errors or unexpected central silence, or `3` with the cause in `message` (`macro: central not ready`, `macro: central went silent`, `macro: protocol error` or `macro: selector unavailable`). If the central has not shown its start screen yet, the Prog waits for it for up to 5 s after its last arrival in the menu before failing with `macro: central not ready`. The Prog does not compare the macro with the central model.
 - The web page keeps showing the scratchpad as a hex dump. The **Download .conf** button saves a macro as raw text, ready to be uploaded to the preset server.
 
 ### TLS
@@ -279,6 +279,8 @@ Code: `main/admin_api.c` / `admin_api.h`, registered by `preset_server_start()` 
 | `last` | Outcome of the last finished operation: `op` (`check`, `update`, `format`), `ok`, `message` |
 
 **`GET /admin/history`** (both history and preset are RAM only: empty after a reboot or a format)
+
+The history records the **request and the download**: what was asked, which preset location matched, the size and CRC, and the HTTP reply that was sent. It is meant to debug request and download problems. It does not follow the run after the reply, so a macro run that fails during the replay still shows `ok` (200) here. Macro and UART protocol level problems are debugged on the log console (port 2323), and the result of the latest run is in `GET /status`.
 
 ```json
 {"now_s":8077,"entries":[
