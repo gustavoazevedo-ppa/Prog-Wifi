@@ -109,6 +109,14 @@ If none exist, the start fails (see error handling, still to be defined).
 - Size: a few dozen bytes up to 2 KB (binary) in the worst case. That is up to about 4 KB of hex text.
 - Current phase: the Prog downloads the file and logs its content to the console.
 
+### Macro file (planned, see `docs/selector-bridge-design.md` section 7c)
+
+- The same hook and the same `exemplo.conf` name and location order are used. The content is what differs: a macro is **raw text** that starts with `#`, not hex. A preset is hex digits only, so the first non-blank character (after an optional BOM) tells them apart.
+- Format: a header line (`#` plus the central's start screen, for example `#MODEL X/V1.2`), then tokens separated by blanks. A number means "this many central polls with the current keys". A letter is a key event: `M` (minus), `P` (plus), `O` (OK), `S` (SEL), uppercase for press and lowercase for release. Example: `3 P 2 p 4 S 1 s 10 O 2 o 30`.
+- Limits: 2048 bytes in total. The whole file is validated on download. An invalid macro returns `500`, `status: 3`, and the previous scratchpad content is kept.
+- The Prog replays the macro as soon as it is downloaded, ignoring the keys of the real selector, and shows the central's screens. `GET /status` reports `status: 1` while it replays, then `2` when the whole script was sent without protocol errors or unexpected central silence, or `3` with the cause in `message`. The Prog does not compare the macro with the central model.
+- The web page keeps showing the scratchpad as a hex dump. The **Download .conf** button saves a macro as raw text, ready to be uploaded to the preset server.
+
 ### TLS
 
 - HTTPS is enough. HTTP may be used in some cases.
@@ -133,6 +141,7 @@ If none exist, the start fails (see error handling, still to be defined).
 | Invalid JSON or missing `id` / `caminho` | 400 | Status object, `status: 3` |
 | Run already in progress | 409 | Status object of the current run (state untouched) |
 | Firmware update download, NVS format or reboot in progress (see "Admin endpoints") | 409 | Status object with the request `id`, `status: 3` and `message: ["firmware update in progress, try again later"]` (stored state untouched) |
+| Selector in use (the Prog menu is in transparent mode, see "Macro file"), planned | 409 | Status object with the request `id`, `status: 3` and `message: ["selector in use, try again later"]` (stored state untouched). Applies to every run, not only macros |
 | No `exemplo.conf` found in any location | 404 | Status object, `status: 3` |
 | Invalid hex content, or any other failure | 500 | Status object, `status: 3` |
 

@@ -27,8 +27,9 @@ Goals
 - Keep protocol details in the ports so a future protocol only needs a new port.
 
 Non-goals (for now)
-- Menu injection, macros, parameter presets, value extraction, per-product profiles.
-  They are translators built later on top of this core.
+- Menu injection beyond the Prog menu, parameter presets, value extraction, per-product profiles.
+  They are translators built later on top of this core. Macros (record and replay of key
+  presses) are designed in section 7c.
 - Jig / BLE function codes. They are not known selector commands and are dropped in the
   selector role. (The master-mode "connect" protocol is a separate dialect, see section 6.3.)
 - Any change to HTTP / admin APIs.
@@ -58,10 +59,16 @@ Non-goals (for now)
 | 17 | The encrypted variant is `byte ^ checksum ^ 0xAA` over ID, Function, Data and Counter (verified against `PROTECT.c`). It is implemented as a frame profile transform, later. |
 | 18 | A later admin action reads the configuration from a reference central and returns it as hex, the source of the preset files. |
 | 19 | Out of scope: the central type `0xFF` GPIO-only mode, and TX backup / restore. |
-| 20 | The Prog menu is the default screen from boot. The central takes the screen on its first valid frame, and the menu returns after 3 s without one (section 7b). Navigation is manual with the arrow keys (`SEL` next, `OK` previous). |
+| 20 | The Prog menu is the default screen from boot. In phase 1 the central takes the screen on its first valid frame, and the menu returns after 3 s without one (section 7b). The macro design replaces the automatic hand-over with an explicit `[ENTER CENTRAL]` entry (decisions 25 and 26, section 7c). Navigation is manual with the arrow keys (`SEL` next, `OK` previous). |
 | 21 | The menu shows all interfaces enabled in the firmware, even when down (IP `0.0.0.0`, real MAC), after a project / version page. During master mode the selector shows `PROGRAMMING...`. |
 | 22 | The host port polls keys about every 40 ms and sends screens only on change plus a 1 s refresh. The selector has no no-host timeout, and measured data shows a 100 ms poll reports only 65% of quick presses. |
 | 23 | The key state given to the central is not latched: a tap shorter than the central's own poll is lost, as with a direct connection. Revisit after the real-central test (`docs/open-questions.md`, D6). |
+| 24 | Macros (designed, not implemented): the Prog records the user's key presses on the central and replays them to set parameters. A macro is press / release events with timing counted in central polls, stored as raw ASCII text that starts with `#` (section 7c). |
+| 25 | The Prog menu no longer hands the screen to the central by itself. While the menu shows, the panel port does not reply to the central (reply gate), so the central stays on its start screen. The menu entries `[ENTER CENTRAL]`, `[RECORD MACRO]` and `[REPLAY MACRO]` open the gate. |
+| 26 | Transparent mode ends after 3 s without a central frame or 3 s without a key press (two defines). Every exit to the menu runs the reset procedure: no replies until the central shows its start screen again, 5 s limit. |
+| 27 | The macro uses the 2 KB preset scratchpad. The Stinger delivers it through the same `/iniciar` hook (a file that starts with `#`), it is validated when downloaded, and it is replayed at once. Saving to disk is the existing download button on the web page. The Prog does not check the macro against the central model: the Stinger sends the right file. |
+| 28 | `POST /iniciar` is refused with 409 while the Prog is in transparent mode. A macro run succeeds when the whole script is sent with no protocol error and no unexpected central silence. |
+| 29 | Wait-for-screen steps are a later upgrade. The parser rejects unknown tokens, so a new step type can be added without old firmware misreading a new macro. |
 
 ## 3. Hardware
 
@@ -234,7 +241,9 @@ message interface. It does not touch the bridge or the translators.
      the frame it answers (`0x81`, or the legacy `0x51`): a central that sends `0x51` needs
      the answer with `0x51`. Decided per frame, no state, and the checksum is not affected.
 - The reply is sent whether or not the translator forwards the message, so the central
-  never waits on the Prog's logic.
+  never waits on the Prog's logic. Planned exception for macros (section 7c): a **reply gate**,
+  an explicit switch set by the translator, closed while the Prog menu shows and open
+  otherwise. It is open by default, and link supervision does not depend on it.
 - Link: DOWN until the first valid frame; UP on every valid frame; DOWN after
   `link_timeout_ms` without one. Reports changes to the bridge.
 - Upstream `KEYS` messages from the bridge only update the cache. Nothing is sent
@@ -378,6 +387,10 @@ Shows the Prog's own information on the selector when the central is not talking
 central the screen back as soon as it talks again. Later it can host settings and other
 information about the Prog itself.
 
+This section describes the phase 1 behavior. Section 7c replaces the automatic hand-over to the
+central (the `MENU` to `CENTRAL` transition and the reply to every central frame) when macros are
+implemented.
+
 ### States
 
 | State | Screen shown | Upstream keys |
@@ -432,6 +445,175 @@ The IP is read from the netif at a slow rate (for example every 500 ms) and the 
 re-emitted when a value or the page changes. The selector port repeats the latest screen at its
 own cadence. Reading the network state must never block the bridge task.
 
+
+## 7c. Macros (designed, not implemented)
+
+A macro is a recording of the keys a user pressed on the selector while talking to the central,
+replayed later to set parameters on the same kind of central. It replaces the "save preset"
+master-mode path for centrals that do not support it. Nothing in this section is built yet. The
+points that need a real central are in `docs/open-questions.md`, section F.
+
+Scope for now: press / release events with timing counted in polls. Wait-for-screen steps, a
+checksum, and a check of the macro against the central model are not part of it (decisions 27 and
+29).
+
+### File format
+
+Raw ASCII text, never hex encoded. A preset file holds hex digits only, so a leading `#` tells a
+macro from a preset. It can be edited with any text editor and uploaded again.
+
+```
+#MODEL X/V1.2
+3 P 2 p 4 S 1 s 10 O 2 o 30
+```
+
+- **Header line:** `#` followed by the central's start screen (the stored pop-up, see below), ended by
+  the first CR or LF. It is informational. The Prog does not compare it with the central.
+- **Body:** tokens separated by blanks (space, tab, CR, LF).
+  - A **number** (decimal, 1 to 65535) means "send this many replies with the current key state".
+    Two numbers in a row add up.
+  - A **key token** is a letter: `M` = MINUS, `P` = PLUS, `O` = OK (`<-`), `S` = SEL (`->`).
+    Uppercase presses the key, lowercase releases it. Key tokens take effect on the next reply, and
+    several key tokens in a row (no number between them) change in the same reply, which is how a
+    chord (for example PLUS and MINUS) is written.
+  - The state at the start is every key released. Keys still pressed at the end are released
+    implicitly.
+- **Poll (reply) count:** one reply to a central frame of function `'S'` or `'?'` while the reply
+  gate is open. Frames `'B'` and `'L'` are answered but not counted until it is known whether their
+  replies carry key state (`docs/open-questions.md`, S7 and F3).
+- **Size:** at most `PRESET_BIN_MAX` (2048 bytes, the preset scratchpad). A press and release with
+  waits is about 8 bytes at a 100 ms poll, so roughly 250 key presses fit.
+- **Validation** runs over the whole file when it is downloaded. A macro with a character that is not
+  part of a token, a number outside 1 to 65535, no header line, or more than 2048 bytes is not stored,
+  and the previous buffer content is kept (same guarantee as an invalid hex file).
+
+### Menu, states and the reply gate
+
+The Prog menu keeps the pages of section 7b, and three entries are added after the project page:
+
+| Page order | Line 1 | Line 2 |
+|---|---|---|
+| 1 | project page (section 7b) | |
+| 2 | `[ENTER CENTRAL]` | `PLUS = GO` |
+| 3 | `[RECORD MACRO]` | `PLUS = GO`, or the reason it is unavailable |
+| 4 | `[REPLAY MACRO]` | `PLUS = GO`, or the reason it is unavailable |
+| 5 and up | IP and MAC pages of section 7b | |
+
+- **Keys in the menu:** `SEL` next, `OK` previous (wrapping), `PLUS` picks the entry. `MINUS` is
+  ignored. The held-key hand-back of section 7b keeps the `PLUS` that picked an entry from reaching
+  the central.
+- **Reasons shown on line 2** (first match wins): `BUSY` (a test run is active,
+  `preset_server_run_active()`), `NO MACRO` (the scratchpad does not hold a valid macro, replay only),
+  `NO CENTRAL` (no pop-up stored), `WAIT CENTRAL` (the reset procedure is still running).
+- **Reply gate:** the panel port does not reply to the central while the menu shows. The central keeps
+  sending its start screen, which the translator reads. The gate opens when an entry is picked or a
+  run starts. Link supervision counts received frames, not replies, so the link events still work
+  with the gate closed.
+
+| State | Gate | Screen shown | Upstream keys |
+|---|---|---|---|
+| `MENU` (from boot and after every exit) | closed | the Prog menu | not sent to the central |
+| `CENTRAL` | open | the central's screens, forwarded unchanged | forwarded unchanged. Recording is a flag of this state |
+| `REPLAY` | open | the central's screens, forwarded unchanged | the real selector's keys are ignored, the macro supplies the keys |
+| `STATUS` | as in 7a | `PROGRAMMING...` | not sent to the central |
+
+Transitions:
+- `MENU` to `CENTRAL`: `[ENTER CENTRAL]`, or `[RECORD MACRO]` (which also starts recording).
+- `MENU` to `REPLAY`: `[REPLAY MACRO]`, or a macro downloaded through `POST /iniciar`.
+- `CENTRAL` to `MENU`: `CENTRAL_SILENCE_MS` (3000) without a valid central frame, or
+  `CENTRAL_KEY_IDLE_MS` (3000) without a key edge from the real selector. Both are defines.
+  Recording also ends when the buffer is full.
+- `REPLAY` to `MENU`: the script ends (success), or the run fails (below). The key idle rule does
+  not apply, because a macro can leave the keys idle for a long time.
+- Every arrival in `MENU` runs the reset procedure.
+
+### Start-screen pop-up and the reset procedure
+
+- **Stored pop-up:** the central's start screen (model and firmware version), kept in RAM as one line.
+  Each of the two rows is trimmed of leading and trailing spaces, empty rows are dropped, and the rows
+  are joined with `/`, for example `MODEL X/V1.2`. Comparisons use the same form.
+- **Capture [unverified, rule to confirm on the bench]:** while the gate is closed, the first screen
+  received after the link comes up, and, after an exit to the menu, the first screen that differs
+  from the last one the central sent before the gate closed.
+- **Clear:** when the panel port reports the central link down (500 ms without a frame), and when the
+  reset wait times out.
+- **Reset procedure:** on entering `MENU` the gate closes, "ready" is cleared and a
+  `POPUP_RESET_WAIT_MS` (5000) timer starts. Every central screen is compared with the stored pop-up.
+  A match sets "ready" (the central is back on its start screen, so its menus are reset). If the timer
+  ends first, the stored pop-up is cleared and the menu shows `NO CENTRAL` on the macro entries.
+- **Why on exit, not on start:** a run that arrives while the Prog sits in the menu starts at once,
+  with no extra wait. A run that arrives during the reset waits for it, up to the 5 s limit, and
+  fails with status 3 if the limit passes.
+- **Run start check:** a run (menu entry or `/iniciar`) needs "ready". `[RECORD MACRO]` also needs a
+  stored pop-up, which "ready" already implies.
+
+### Recording
+
+- **Start:** `[RECORD MACRO]` clears the scratchpad, writes the header line from the stored pop-up,
+  opens the gate and enters `CENTRAL` with the recording flag.
+- **What is recorded:** the key mask the panel port actually sent in each counted reply, which is what
+  the central saw. A tap that fell between two central polls was never seen by the central and is not
+  in the macro.
+- **Encoding:** run-length over the replies. When the mask changes, the translator writes the number of
+  replies since the last change, then one key token per changed key (uppercase pressed, lowercase
+  released, order `M P O S`). The wait before the first key and the wait after the last key are kept
+  as they happened, so the central has the same settling time on replay. The trailing wait ends where
+  the recording ends, and a key still held at the end gets its release token.
+- **End:** an exit rule of `CENTRAL`, or a full buffer. A full buffer keeps everything up to the last
+  complete token.
+- **Result:** stored in the scratchpad under `s_data_lock`, with the same metadata as a fetched file
+  (valid flag, length, CRC, source `recorded`). The user then opens the web page, reads the hex dump
+  and downloads the file.
+- Recording is refused while a test run is active.
+
+### Replay
+
+- **Start:** from `[REPLAY MACRO]` (a valid macro in the scratchpad, "ready") or from a macro file
+  downloaded through `POST /iniciar`, in both cases with no check against the central model.
+- **Mechanism:** the translator sets the first key mask in the panel port's cache, opens the gate, and
+  on every counted reply event steps the script and sets the mask for the next reply. The central's
+  screens still go to the real selector. The real selector's keys are dropped, and there is no abort
+  during a replay.
+- **Failure:** the central sends no valid frame for `CENTRAL_SILENCE_MS`, or the panel port drops a
+  frame because of a framing, checksum or length error (unknown functions do not count, because the
+  selector role drops jig / BLE functions by design).
+- **Success:** the whole script is sent without a failure. It is judged when the last number has been
+  consumed, before the reset procedure.
+- **After the run:** the translator returns to `MENU` and the reset procedure starts. The selector
+  shows `MACRO OK` or `MACRO FAIL` as page 0 for `MACRO_RESULT_SHOW_MS` (5000) or until a key press,
+  then the usual page 0. If the reset times out afterwards, the run result does not change.
+- **Status:** a run started by `/iniciar` is a normal run. `GET /status` shows `status: 1` while the
+  macro replays, then `2` on success or `3` with the reason in `message` on failure. The shape of
+  `/status` does not change.
+
+### Storage, web page and `/iniciar`
+
+- **Scratchpad:** `s_preset_bin` in `preset_server.c` (2048 bytes, decoded form). A macro is stored as
+  its ASCII bytes, so the existing `GET /admin/preset` hex dump already shows it.
+- **Fetch:** the download keeps the three-URL order and the fixed name `exemplo.conf`. If the first
+  non-blank character after an optional BOM is `#`, the file skips `hex_decode()`, is validated as a
+  macro, and is copied as it is. Any other file follows the hex path unchanged.
+- **Web page:** the **Download .conf** button saves the buffer as raw text when its first byte is
+  `0x23`, and as hex otherwise. The file is then uploaded to the preset server under `exemplo.conf`.
+- **Refusal:** `POST /iniciar` is refused with `409` while the Prog is in `CENTRAL` (including
+  recording). The body is the status object with the request `id`, `status: 3` and a message such as
+  `selector in use, try again later`. The stored state is untouched, as for the firmware-update 409.
+  The check happens when the request is accepted, so it also applies to a normal preset run.
+- **NVS:** nothing is stored in NVS, so no schema version bump.
+
+### Modules and defines (planned)
+
+| Piece | Change |
+|---|---|
+| `selector_macro.c/.h` (new, pure C, no ESP-IDF) | validate, run-length encoder, script iterator |
+| `selector_port` | reply gate; a per-reply event with the key mask sent and whether it was counted |
+| `selector_bridge` | route the reply event to the translator |
+| `selector_tr_menu` | states, menu entries, pop-up store and reset procedure, recording and replay (split into its own translator if it grows) |
+| `preset_server` | macro fork in the fetch, accessors for the scratchpad, replay hand-off in place of the simulated run, the 409 check |
+| `main/index.html` | raw-text download |
+
+Defines: `CENTRAL_SILENCE_MS` (3000, exists), `CENTRAL_KEY_IDLE_MS` (3000), `POPUP_RESET_WAIT_MS`
+(5000), `MACRO_RESULT_SHOW_MS` (5000).
 
 ## 8. Bridge and tasks
 

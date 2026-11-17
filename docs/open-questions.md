@@ -54,7 +54,7 @@ off by default and has no HTTP switch yet (see D4).
 
 | ID | Question | Notes |
 |---|---|---|
-| D2 | Is the 3 s silence rule right in practice? A central that pauses briefly may flash the menu. | Tune `CENTRAL_SILENCE_MS` in `selector_tr_menu.c`. |
+| D2 | Is the 3 s silence rule right in practice? A central that pauses briefly may flash the menu. | Tune `CENTRAL_SILENCE_MS` in `selector_tr_menu.c`. The macro design adds a second define, `CENTRAL_KEY_IDLE_MS` (3 s without a key press), see section F. |
 | D3 | How to expose the frame tap and the bridge counters: an admin endpoint, a build option, or both? Counters could also go into `/info`. | Needed for the bench items above. Nothing is decided. |
 | D4 | The endpoints for reading a config from a reference central (`POST /admin/central/read`, `GET /admin/central/config`) are proposals. | Confirm names and format before building them. |
 
@@ -62,6 +62,20 @@ off by default and has no HTTP switch yet (see D4).
 
 The unknowns about the Stinger's HTTP client, polling interval and `exemplo.conf` details are
 listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
+
+## F. Macros (design in `selector-bridge-design.md` section 7c)
+
+| ID | Question | Blocks | How |
+|---|---|---|---|
+| F1 | When the Prog stops replying to a central that is in one of its menus, does the central show its start screen (model and version) again, and after how long? Is `POPUP_RESET_WAIT_MS` (5 s) enough for every central? | The reset procedure and the 5 s limit. | Real central: stop the replies, read the frame tap, time it. |
+| F2 | Is the pop-up capture rule reliable (first screen after a link-up, or the first screen that differs from the last one forwarded)? What if the Prog boots while the central is in a menu? Does any start screen contain changing text? | Pop-up capture and the match that marks the central as reset. | Frame tap on several centrals and firmware versions. |
+| F3 | Do the replies to `'B'` and `'L'` carry key state (same question as S7)? | Which frames count as a poll. Until known, only `'S'` and `'?'` count. | Send a beep and a backlight frame and read the reply. |
+| F4 | Is the central's poll rate steady while idle and while busy (saving, long messages)? A poll count is only right if the rate is steady, or if the central stops polling while busy. | How much a macro depends on timing, and whether wait-for-screen is needed soon. | Frame tap timestamps during a typical parameter change. |
+| F5 | What press and release length (in replies) does each central need? A recorded macro replays exactly what the central saw, so only hand-edited macros are at risk. | Guidance for people who edit macros. | Replay a test macro with 1, 2 and 3 reply presses. |
+| F6 | Does the central finish its last operation during the trailing wait (the recording keeps it, up to the 3 s key idle time) before the reset procedure stops the replies? | Whether the trailing wait is enough. | Record a save, replay it, check the result on the central. |
+| F7 | Which dropped-frame reasons must fail a replay? The design counts framing, checksum and length errors and ignores unknown functions (jig / BLE functions are dropped by design). | The success rule. | Review the drop reasons in `selector_wire` and a tap of a real central. |
+| F8 | Does `CENTRAL_KEY_IDLE_MS` (3 s) get in the way while recording, for central operations that take longer than 3 s? A key press or a manual edit of the macro works around it. | Tuning, maybe a longer value while recording. | Record a real parameter change. |
+| F9 | `POST /iniciar` is refused with 409 while the Prog is in transparent mode, for every run and not only for macros. Is that acceptable for normal preset runs? | The acceptance rule in `preset_server`. | Decided for now, confirm with the Stinger team. |
 
 ---
 
@@ -77,7 +91,7 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 | D6: hold a short tap for the central | Decided: leave the central path as a direct connection would behave (no latch). Only the Prog menu gets the faster key poll. Revisit after the real-central test (C2): if quick taps on the central's menus feel missed, the preferred fix is a queue that delivers each tap in its own reply, not a simple latch (a latch could merge taps of different keys into a false chord, for example the alarm's `+` and `-` factory-reset sequence) |
 | Selector key debounce | A press needs about 20 to 30 ms of contact, a release is reported at once (Saleae capture, inferred) |
 | Reply to the poll `'?'` | The selector echoes `'?'` and carries the key state, like the reply to `'S'` |
-| D1: do polls count as "the central is talking"? | Closed. The standard is that a central sends its initial screen indefinitely until the selector replies, so polls are not the case to handle. The menu keeps taking the screen on any valid frame |
+| D1: do polls count as "the central is talking"? | Closed. The standard is that a central sends its initial screen indefinitely until the selector replies, so polls are not the case to handle. The menu keeps taking the screen on any valid frame (phase 1 only. The macro design replaces this with the explicit `[ENTER CENTRAL]` entry, see `selector-bridge-design.md` section 7c) |
 | D5: reply to the central with no selector connected | Keep replying (with idle keys). The central proceeds to its menu and a central can be tested without a selector |
 | M5: splash text pattern | It has no stable pattern across models and firmware, so it is not parsed. Revert detection uses the first valid selector-dialect frame from the central. Product identification comes from the Stinger (`produto` in `POST /iniciar`) |
 | C3: central with no selector present | The central keeps sending its initial screen (model and firmware version, a `'S'` frame) until a reply from the selector arrives. It then waits a short delay and shows the first page of its menu. It does not fall back to polls |
