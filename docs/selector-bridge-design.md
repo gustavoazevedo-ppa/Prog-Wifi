@@ -469,15 +469,15 @@ macro from a preset. It can be edited with any text editor and uploaded again.
 
 ```
 #MODEL X/V1.2
-3 P 2 p 4 S 1 s 10 O 2 o 30
+3 C 2 c 4 D 1 d 10 E 2 e 30
 ```
 
 - **Header line:** `#` followed by the central's start screen (the stored pop-up, see below), ended by
   the first CR or LF. It is informational. The Prog does not compare it with the central.
-- **Body:** tokens. Blanks (space, tab, CR, LF) between tokens are optional and ignored, so `3P2p` reads like `3 P 2 p` and `PS` is a chord. A number ends at the first character that is not a digit, so two numbers split by a blank add up: `1 5` is 1 then 5 (6 replies), not 15.
+- **Body:** tokens. Blanks (space, tab, CR, LF) between tokens are optional and ignored, so `3C2c` reads like `3 C 2 c` and `CD` is a chord. A number ends at the first character that is not a digit, so two numbers split by a blank add up: `1 5` is 1 then 5 (6 replies), not 15.
   - A **number** (decimal, 1 to 65535) means "send this many replies with the current key state".
     Two numbers in a row add up.
-  - A **key token** is a letter: `M` = MINUS, `P` = PLUS, `O` = OK (`<-`), `S` = SEL (`->`).
+  - A **key token** is a letter: `B` = MINUS (Baixo), `C` = PLUS (Cima), `E` = OK (`<-`, Esquerda), `D` = SEL (`->`, Direita).
     Uppercase presses the key, lowercase releases it. Key tokens take effect on the next reply, and
     several key tokens in a row (no number between them) change in the same reply, which is how a
     chord (for example PLUS and MINUS) is written.
@@ -569,7 +569,7 @@ Transitions:
   in the macro.
 - **Encoding:** run-length over the replies. When the mask changes, the translator writes the number of
   replies since the last change, then one key token per changed key (uppercase pressed, lowercase
-  released, order `M P O S`). The wait before the first key and the wait after the last key are kept
+  released, order `B C E D`). The wait before the first key and the wait after the last key are kept
   as they happened, so the central has the same settling time on replay. The trailing wait ends where
   the recording ends, and a key still held at the end gets its release token.
 - **End:** an exit rule of `CENTRAL`, or a full buffer. A full buffer keeps everything up to the last

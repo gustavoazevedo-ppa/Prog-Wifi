@@ -9,17 +9,17 @@
 
 #define GROUP_MAX 48 // scratch for one number plus the key tokens of one change
 
-// Key tokens in file order (the order tokens are written for a chord): M P O S
+// Key tokens in file order (the order tokens are written for a chord): B C E D
 static const struct
 {
     char press;
     char release;
     uint8_t bit;
 } s_keys[] = {
-    {'M', 'm', SELECTOR_KEY_MINUS},
-    {'P', 'p', SELECTOR_KEY_PLUS},
-    {'O', 'o', SELECTOR_KEY_OK},
-    {'S', 's', SELECTOR_KEY_SEL},
+    {'B', 'b', SELECTOR_KEY_MINUS}, // Baixo
+    {'C', 'c', SELECTOR_KEY_PLUS},  // Cima
+    {'E', 'e', SELECTOR_KEY_OK},    // Esquerda
+    {'D', 'd', SELECTOR_KEY_SEL},   // Direita
 };
 #define KEY_COUNT (sizeof(s_keys) / sizeof(s_keys[0]))
 
@@ -106,7 +106,7 @@ static tok_t next_token(const uint8_t *d, size_t len, size_t *pos, uint32_t *val
         }
     }
 
-    // Blanks between tokens are optional: "3P2p" is 3, P, 2, p and "PS" is P, S. A number ends at
+    // Blanks between tokens are optional: "3C2c" is 3, C, 2, c and "CD" is C, D. A number ends at
     // the first character that is not a digit, so "1 5" is two numbers (1 and 5, which add up).
     *pos = i;
     return tok;
@@ -396,7 +396,7 @@ bool selector_macro_selftest(void)
         static const uint8_t masks[] = {0, SELECTOR_KEY_PLUS, 0};
         static const uint32_t counts[] = {3, 2, 4};
         static const uint8_t want[] = {0, 0, 0, SELECTOR_KEY_PLUS, SELECTOR_KEY_PLUS, 0, 0, 0, 0};
-        if (!st_encode_is("MODEL X/V1.2", masks, counts, 3, "#MODEL X/V1.2\n3 P 2 p 4", &e, buf, sizeof(buf)))
+        if (!st_encode_is("MODEL X/V1.2", masks, counts, 3, "#MODEL X/V1.2\n3 C 2 c 4", &e, buf, sizeof(buf)))
         {
             return false;
         }
@@ -417,12 +417,12 @@ bool selector_macro_selftest(void)
         }
     }
 
-    // Round trip 2: a chord changes in one reply (tokens in M P O S order), and a key still held
+    // Round trip 2: a chord changes in one reply (tokens in B C E D order), and a key still held
     // at the end gets its release token
     {
         static const uint8_t masks[] = {0, SELECTOR_KEY_MINUS | SELECTOR_KEY_PLUS};
         static const uint32_t counts[] = {1, 1};
-        if (!st_encode_is("A", masks, counts, 2, "#A\n1 M P 1 m p", &e, buf, sizeof(buf)))
+        if (!st_encode_is("A", masks, counts, 2, "#A\n1 B C 1 b c", &e, buf, sizeof(buf)))
         {
             return false;
         }
@@ -438,7 +438,7 @@ bool selector_macro_selftest(void)
     {
         static const uint8_t masks[] = {0, SELECTOR_KEY_SEL};
         static const uint32_t counts[] = {70000, 1};
-        if (!st_encode_is("H", masks, counts, 2, "#H\n65535 4465 S 1 s", &e, buf, sizeof(buf)))
+        if (!st_encode_is("H", masks, counts, 2, "#H\n65535 4465 D 1 d", &e, buf, sizeof(buf)))
         {
             return false;
         }
@@ -570,24 +570,24 @@ bool selector_macro_selftest(void)
             const char *text;
             selector_macro_result_t want;
         } vec[] = {
-            {"#H\n3 P 2 p 4", SELECTOR_MACRO_OK},
+            {"#H\n3 C 2 c 4", SELECTOR_MACRO_OK},
             {"#H", SELECTOR_MACRO_OK},
-            {"#H\r\n3\r\nP\tm", SELECTOR_MACRO_OK},
+            {"#H\r\n3\r\nC\tb", SELECTOR_MACRO_OK},
             {"\xEF\xBB\xBF#H\n1", SELECTOR_MACRO_OK},
             {"#H\n65535", SELECTOR_MACRO_OK},
             {"", SELECTOR_MACRO_ERR_NO_HEADER},
             {"3 P", SELECTOR_MACRO_ERR_NO_HEADER},
-            {"#H\n3P", SELECTOR_MACRO_OK},
-            {"#H\n3P2p4S1s10O2o30", SELECTOR_MACRO_OK},
-            {"#H\nPS", SELECTOR_MACRO_OK},
-            {"#H\n3P\r\n2\tp", SELECTOR_MACRO_OK},
+            {"#H\n3C", SELECTOR_MACRO_OK},
+            {"#H\n3C2c4D1d10E2e30", SELECTOR_MACRO_OK},
+            {"#H\nCD", SELECTOR_MACRO_OK},
+            {"#H\n3C\r\n2\tc", SELECTOR_MACRO_OK},
             {"#H\n1 5", SELECTOR_MACRO_OK},
             {"#H\n3 X", SELECTOR_MACRO_ERR_BAD_CHAR},
-            {"#H\n3PX", SELECTOR_MACRO_ERR_BAD_CHAR},
-            {"#H\n3P#", SELECTOR_MACRO_ERR_BAD_CHAR},
+            {"#H\n3CX", SELECTOR_MACRO_ERR_BAD_CHAR},
+            {"#H\n3C#", SELECTOR_MACRO_ERR_BAD_CHAR},
             {"#H\n#", SELECTOR_MACRO_ERR_BAD_CHAR},
             {"#H\n1 0", SELECTOR_MACRO_ERR_BAD_NUMBER},
-            {"#H\n3P0", SELECTOR_MACRO_ERR_BAD_NUMBER},
+            {"#H\n3C0", SELECTOR_MACRO_ERR_BAD_NUMBER},
             {"#H\n0", SELECTOR_MACRO_ERR_BAD_NUMBER},
             {"#H\n65536", SELECTOR_MACRO_ERR_BAD_NUMBER},
             {"#H\n99999999999", SELECTOR_MACRO_ERR_BAD_NUMBER},
@@ -602,7 +602,7 @@ bool selector_macro_selftest(void)
         // Tokens without blanks decode like the same tokens with blanks, and two numbers split by
         // a blank add up
         {
-            static const char compact[] = "#H\n3P2p";
+            static const char compact[] = "#H\n3C2c";
             static const uint8_t want[] = {0, 0, 0, SELECTOR_KEY_PLUS, SELECTOR_KEY_PLUS};
             selector_macro_iter_t it;
             uint8_t m;
