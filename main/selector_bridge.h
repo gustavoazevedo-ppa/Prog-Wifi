@@ -25,6 +25,13 @@ typedef struct
     void (*on_mode)(void *ctx, bool central_slave);
     // Every SELECTOR_BRIDGE_TICK_MS
     void (*on_tick)(void *ctx, uint32_t now_ms);
+    // The panel port replied to the central. keys is the key mask the reply carried (what the central
+    // saw), counted is true when the reply answered a frame of function 'S' or '?'. Not called while
+    // the reply gate is closed.
+    void (*on_reply)(void *ctx, uint8_t keys, bool counted);
+    // true: the panel port starts with its reply gate closed (the translator keeps the central
+    // silent from the first frame). false (default): open, as before.
+    bool gate_closed_at_start;
 } selector_translator_t;
 
 #define SELECTOR_BRIDGE_TICK_MS 10
@@ -40,6 +47,11 @@ typedef struct
 // BACKLIGHT), upstream goes to the central (KEYS). Other types are ignored.
 // Only call it from the translator callbacks.
 void selector_bridge_emit(selector_dir_t dir, const selector_msg_t *msg);
+
+// Opens or closes the panel port's reply gate (open by default). Closed: the central gets no reply,
+// but its frames still reach the translator (the panel link stays down while closed). Only call it from the translator
+// callbacks.
+void selector_bridge_set_reply_gate(bool open);
 
 // Milliseconds since boot (wraps at 2^32, compare with subtraction).
 uint32_t selector_bridge_now_ms(void);

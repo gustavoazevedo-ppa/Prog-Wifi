@@ -243,9 +243,14 @@ message interface. It does not touch the bridge or the translators.
 - The reply is sent whether or not the translator forwards the message, so the central
   never waits on the Prog's logic. Planned exception for macros (section 7c): a **reply gate**,
   an explicit switch set by the translator, closed while the Prog menu shows and open
-  otherwise. It is open by default, and link supervision does not depend on it.
-- Link: DOWN until the first valid frame; UP on every valid frame; DOWN after
-  `link_timeout_ms` without one. Reports changes to the bridge.
+  otherwise. It is open by default.
+- Link: means an open session with the central, not "frames are arriving". UP with the first reply
+  the Prog sends after the gate opens. DOWN when the gate closes (the port task sees the gate flag
+  change, so the event comes from the port's own task) or when no valid frame arrives for
+  `link_timeout_ms` (500) while the gate is open. While the gate is closed there are no link events:
+  the central's repeated start screens do not toggle the link or its log lines. The statistics
+  `link_up` and `link_changes` follow the same meaning. This applies to the panel port only, the host
+  port keeps "UP on every valid reply". Reports changes to the bridge.
 - Upstream `KEYS` messages from the bridge only update the cache. Nothing is sent
   unsolicited.
 - Unknown / malformed frames: no reply, count the drop.
@@ -403,7 +408,7 @@ Transitions
 - `MENU` to `CENTRAL`: on the first valid downstream frame from the central. No delay.
 - `CENTRAL` to `MENU`: when 3000 ms have passed since the last valid downstream frame, and the
   central is not in master mode. The translator measures this itself with its tick. The port's own
-  link-down event (500 ms) is not used for this. The menu always restarts at page 0.
+  link events (session state, see 6.1) are not used for this. The menu always restarts at page 0.
 - Any state to `STATUS`: when the central command service reports master mode (`on_mode`, see
   6.3 and 7a). Back to `CENTRAL` when the central is talking again (its first valid frame after
   the revert).
@@ -507,8 +512,9 @@ The Prog menu keeps the pages of section 7b, and three entries are added after t
   `NO CENTRAL` (no pop-up stored), `WAIT CENTRAL` (the reset procedure is still running).
 - **Reply gate:** the panel port does not reply to the central while the menu shows. The central keeps
   sending its start screen, which the translator reads. The gate opens when an entry is picked or a
-  run starts. Link supervision counts received frames, not replies, so the link events still work
-  with the gate closed.
+  run starts. The panel link means an open session (section 6.1), so it is down while the gate is
+  closed and the port emits no link events then. The translator does not use link events for the
+  central: it tracks presence itself (below).
 
 | State | Gate | Screen shown | Upstream keys |
 |---|---|---|---|
@@ -521,7 +527,7 @@ Transitions:
 - `MENU` to `CENTRAL`: `[ENTER CENTRAL]`, or `[RECORD MACRO]` (which also starts recording).
 - `MENU` to `REPLAY`: `[REPLAY MACRO]`, or a macro downloaded through `POST /iniciar`.
 - `CENTRAL` to `MENU`: `CENTRAL_SILENCE_MS` (3000) without a valid central frame, or
-  `CENTRAL_KEY_IDLE_MS` (3000) without a key edge from the real selector. Both are defines.
+  `CENTRAL_KEY_IDLE_MS` (3000) with no key pressed on the real selector. The timer restarts on every key change and keeps restarting while any key is held, so it counts from the release. Both are defines.
   Recording also ends when the buffer is full.
 - `REPLAY` to `MENU`: the script ends (success), or the run fails (below). The key idle rule does
   not apply, because a macro can leave the keys idle for a long time.
@@ -533,10 +539,17 @@ Transitions:
   Each of the two rows is trimmed of leading and trailing spaces, empty rows are dropped, and the rows
   are joined with `/`, for example `MODEL X/V1.2`. Comparisons use the same form.
 - **Capture [unverified, rule to confirm on the bench]:** while the gate is closed, the first screen
-  received after the link comes up, and, after an exit to the menu, the first screen that differs
-  from the last one the central sent before the gate closed.
-- **Clear:** when the panel port reports the central link down (500 ms without a frame), and when the
-  reset wait times out.
+  received when the central goes from absent to present (including boot), and, after an exit to the
+  menu, the first screen that differs from the last one the central sent before the gate closed.
+- **Presence:** the translator tracks it in every state, from any valid central frame, with its own
+  timer. The central is absent after `CENTRAL_SILENCE_MS` (3000) without one. A central that keeps
+  repeating its start screen while unanswered is present. Because this threshold must exceed the
+  central's retry interval, see F1 in `open-questions.md` (1.09 s measured on one central).
+- **Clear:** when presence is lost, and when the reset wait times out. Never because of port link
+  events, so a central that pauses polling for more than 500 ms while answered keeps its pop-up.
+  Master mode (6.3) is not implemented: a central silent on purpose in master mode will also count
+  as absent after 3 s unless the translator gets `on_mode` and holds presence then (to decide when
+  master mode is built).
 - **Reset procedure:** on entering `MENU` the gate closes, "ready" is cleared and a
   `POPUP_RESET_WAIT_MS` (5000) timer starts. Every central screen is compared with the stored pop-up.
   A match sets "ready" (the central is back on its start screen, so its menus are reset). If the timer

@@ -33,6 +33,8 @@ struct selector_port
     // Selector role (faces the central)
     uint8_t cached_keys;
     selector_screen_t last_screen;
+    // Reply gate: written by the bridge task, read by the port task. A single byte, so no lock.
+    volatile bool reply_gate_open;
 
     // Host role (faces the real selector)
     selector_screen_t screen;
@@ -213,6 +215,14 @@ static void port_check_drops(selector_port_t *p, uint32_t now)
              (unsigned)(p->framer.drops[SELECTOR_DROP_PARTIAL_TIMEOUT] + p->decode_drops[SELECTOR_DROP_PARTIAL_TIMEOUT]));
 }
 
+void selector_port_set_reply_gate(selector_port_t *p, bool open)
+{
+    if (p != NULL && p->cfg.role == SELECTOR_ROLE_SELECTOR)
+    {
+        p->reply_gate_open = open;
+    }
+}
+
 void selector_port_get_stats(const selector_port_t *p, selector_port_stats_t *out)
 {
     *out = p->stats;
@@ -267,22 +277,34 @@ static void panel_handle_frame(selector_port_t *p, const selector_frame_t *frame
     }
 
     // Reply from the cached keys, whatever the bridge does with the message, reply_delay_ms after
-    // the end of the central's frame (the real selector takes about 3.5 ms)
-    if (p->cfg.reply_delay_ms > 0)
-    {
-        port_wait_until(frame_end_us + (int64_t)p->cfg.reply_delay_ms * 1000);
-    }
-    panel_drain(p);
-    uint8_t reply[SELECTOR_REPLY_FRAME];
-    // The reply carries the same tail as the frame it answers (0x81 or the legacy 0x51)
-    size_t len = selector_encode_reply(frame->bytes[3], p->cached_keys, frame->bytes[frame->len - 1], reply);
-    uart_write_bytes(p->cfg.uart, (const char *)reply, len);
+    // the end of the central's frame (the real selector takes about 3.5 ms). Unless the gate is
+    // closed: then the central gets no reply (it keeps sending its start screen), the frame goes
+    // to the bridge but does not touch the link (no session).
+    bool replied = p->reply_gate_open;
+    uint8_t reply_keys = 0;
     port_tap(p, "RX", frame->bytes, frame->len);
-    port_tap(p, "TX", reply, len);
+    if (replied)
+    {
+        if (p->cfg.reply_delay_ms > 0)
+        {
+            port_wait_until(frame_end_us + (int64_t)p->cfg.reply_delay_ms * 1000);
+        }
+        panel_drain(p);
+        uint8_t reply[SELECTOR_REPLY_FRAME];
+        // The reply carries the same tail as the frame it answers (0x81 or the legacy 0x51)
+        size_t len = selector_encode_reply(frame->bytes[3], p->cached_keys, frame->bytes[frame->len - 1], reply);
+        uart_write_bytes(p->cfg.uart, (const char *)reply, len);
+        port_tap(p, "TX", reply, len);
+        reply_keys = p->cached_keys;
+    }
 
     p->stats.frames_ok++;
     p->last_valid_ms = now;
-    port_set_link(p, true);
+    if (replied)
+    {
+        // The link is an open session: it comes up with the first reply after the gate opens
+        port_set_link(p, true);
+    }
 
     if (msg.type == SELECTOR_MSG_SCREEN)
     {
@@ -291,6 +313,18 @@ static void panel_handle_frame(selector_port_t *p, const selector_frame_t *frame
 
     selector_evt_t evt;
     memset(&evt, 0, sizeof(evt));
+    if (replied)
+    {
+        // Which key state the central just saw. Only replies to 'S' and '?' are counted: it is
+        // not known yet whether the replies to 'B' and 'L' carry key state (open questions F3, S7).
+        uint8_t func = frame->bytes[3];
+        evt.type = SELECTOR_EVT_REPLY;
+        evt.side = SELECTOR_SIDE_CENTRAL;
+        evt.keys = reply_keys;
+        evt.counted = func == SELECTOR_FUNC_SCREEN || func == SELECTOR_FUNC_POLL;
+        port_send_evt(p, &evt);
+        memset(&evt, 0, sizeof(evt));
+    }
     evt.type = SELECTOR_EVT_MSG;
     evt.side = SELECTOR_SIDE_CENTRAL;
     evt.dir = SELECTOR_DIR_DOWNSTREAM;
@@ -324,7 +358,9 @@ static void panel_task(void *arg)
         }
 
         port_check_drops(p, now);
-        if (p->link_up && (uint32_t)(now - p->last_valid_ms) > p->cfg.link_timeout_ms)
+        // Session over: the gate was closed (flag written by the bridge task, polled here so the
+        // event comes from this task), or no valid frame for the link timeout
+        if (p->link_up && (!p->reply_gate_open || (uint32_t)(now - p->last_valid_ms) > p->cfg.link_timeout_ms))
         {
             port_set_link(p, false);
         }
@@ -518,6 +554,7 @@ selector_port_t *selector_port_start(const selector_port_cfg_t *cfg)
     selector_framer_init(&p->framer, SELECTOR_ID, cfg->partial_timeout_ms);
     memset(p->last_screen.row, ' ', sizeof(p->last_screen.row));
     p->cached_keys = 0;
+    p->reply_gate_open = !cfg->reply_gate_closed;
 
     esp_err_t err = port_uart_init(cfg);
     if (err != ESP_OK)

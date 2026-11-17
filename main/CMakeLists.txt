@@ -11,6 +11,7 @@ idf_component_register(
         "http_log.c"
         "selector_wire.c"
         "selector_keys.c"
+        "selector_macro.c"
         "selector_port.c"
         "selector_bridge.c"
         "selector_tr_menu.c"

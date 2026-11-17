@@ -1,8 +1,15 @@
 /*
  * Prog menu translator. See selector_tr_menu.h.
  *
- * States: MENU (from boot), CENTRAL (the central's screens pass through), STATUS
- * (PROGRAMMING... while the central is in master mode, planned).
+ * States: MENU (from boot, and after every exit), CENTRAL (the central's screens and the keys pass
+ * through), REPLAY (state only for now, no engine: milestone B), STATUS (PROGRAMMING... while the
+ * central is in master mode, planned).
+ *
+ * The menu does not hand the screen to the central by itself. While it shows, the panel port's reply
+ * gate is closed, so the central keeps sending its start screen (the pop-up), which is stored here.
+ * [ENTER CENTRAL] opens the gate. Every arrival in MENU runs the reset procedure: no replies until
+ * the central shows its stored pop-up again, POPUP_RESET_WAIT_MS at most.
+ * Design: docs/selector-bridge-design.md section 7c.
  */
 
 #include <ctype.h>
@@ -16,27 +23,52 @@
 #include "selector_wire.h"
 #include "wifi_manager.h"
 #include "ethernet_manager.h"
+#include "preset_server.h"
 #include "selector_keys.h"
+#include "selector_macro.h"
 #include "selector_tr_menu.h"
 
 #define TAG "SEL_MENU"
 
-#define CENTRAL_SILENCE_MS 3000 // without a valid central frame, the menu comes back
-#define NET_POLL_MS 500         // how often the network state is re-read in the menu
-#define TEXT_LEN 40             // scratch size for formatting before truncating to 16 columns
+#define CENTRAL_SILENCE_MS 3000  // without a valid central frame, the menu comes back
+#define CENTRAL_KEY_IDLE_MS 3000 // with no key pressed on the real selector (CENTRAL only); a held key restarts it, same
+#define POPUP_RESET_WAIT_MS 5000 // reset procedure: how long to wait for the central's start screen
+#define NET_POLL_MS 500          // how often the network state is re-read in the menu
+#define ENTRY_POLL_MS 100        // how often the availability reason of a macro entry is re-read
+#define TEXT_LEN 40              // scratch size for formatting before truncating to 16 columns
+
+// Menu pages: the project page, the three entries, then the IP and MAC pages
+#define PAGE_PROJECT 0
+#define PAGE_ENTER 1
+#define PAGE_RECORD 2
+#define PAGE_REPLAY 3
+#define PAGE_IFACE_FIRST 4
 
 typedef enum
 {
     MENU_STATE_MENU = 0,
     MENU_STATE_CENTRAL,
+    MENU_STATE_REPLAY,
     MENU_STATE_STATUS
 } menu_state_t;
+
+// Which central screen is taken as the pop-up while the gate is closed and none is stored.
+// UNVERIFIED rule (open questions F2): needs a frame tap on real centrals.
+typedef enum
+{
+    CAPTURE_NONE = 0,
+    CAPTURE_FIRST, // the first screen after the central goes from absent to present (incl. boot)
+    CAPTURE_DIFF   // the first screen that differs from the last one before the gate closed
+} capture_t;
 
 static struct
 {
     menu_state_t state;
+    bool started; // the first tick has run (gate closed, reset procedure begun)
     int page;
-    uint32_t last_central_ms;
+    bool central_present;     // a valid central frame arrived within CENTRAL_SILENCE_MS (any state)
+    uint32_t last_central_ms; // last valid central frame, drives presence and the exit rules
+    uint32_t last_key_ms; // last time a key was pressed or changed on the real selector (a held key keeps it current), for the key idle exit
     uint32_t last_net_ms;
     uint8_t user_keys;     // keys currently pressed on the real selector
     uint8_t handback_mask; // keys held when the central took over: masked until released
@@ -44,8 +76,17 @@ static struct
     bool dirty;            // the screen must be emitted again
     char last_l1[SELECTOR_LCD_COLS + 1];
     char last_l2[SELECTOR_LCD_COLS + 1];
-} s_menu = {.state = MENU_STATE_MENU, .dirty = true};
 
+    // Pop-up store and reset procedure
+    char popup[SELECTOR_MACRO_POPUP_MAX]; // the central's start screen, normalized
+    bool popup_valid;
+    bool popup_ready;      // the central is showing its start screen again (its menus are reset)
+    bool reset_active;     // the reset wait is running
+    uint32_t reset_start_ms;
+    char last_norm[SELECTOR_MACRO_POPUP_MAX]; // the last central screen, normalized
+    char ref_norm[SELECTOR_MACRO_POPUP_MAX];  // the last central screen before the gate closed
+    capture_t capture;
+} s_menu = {.state = MENU_STATE_MENU, .dirty = true, .capture = CAPTURE_NONE};
 // ─── Output helpers ─────────────────────────────────────────────────────────
 
 static void emit_screen(const char *l1, const char *l2)
@@ -74,7 +115,40 @@ static void emit_keys(uint8_t pressed)
 
 static int page_count(void)
 {
-    return 1 + (wifi_is_enabled() ? 2 : 0) + (ethernet_is_enabled() ? 2 : 0);
+    return PAGE_IFACE_FIRST + (wifi_is_enabled() ? 2 : 0) + (ethernet_is_enabled() ? 2 : 0);
+}
+
+// Milestone A: the scratchpad accessors come with milestone B, so no macro is ever available yet.
+// Replace this with the preset server's "valid macro in the scratchpad" check then.
+static bool macro_in_scratchpad(void)
+{
+    return false;
+}
+
+// Why a macro entry cannot be used now, or NULL when it can. First match wins.
+static const char *entry_reason(int page)
+{
+    if (page == PAGE_ENTER)
+    {
+        return NULL;
+    }
+    if (preset_server_run_active())
+    {
+        return "BUSY";
+    }
+    if (page == PAGE_REPLAY && !macro_in_scratchpad())
+    {
+        return "NO MACRO";
+    }
+    if (!s_menu.popup_valid)
+    {
+        return "NO CENTRAL";
+    }
+    if (!s_menu.popup_ready)
+    {
+        return "WAIT CENTRAL";
+    }
+    return NULL;
 }
 
 static void copy_cols(char *dst, const char *src)
@@ -173,13 +247,20 @@ static void render_iface(bool wifi, int kind, char *l1, char *l2)
 
 static void render_page(int page, char *l1, char *l2)
 {
-    if (page <= 0)
+    if (page == PAGE_PROJECT)
     {
         render_project(l1, l2);
         return;
     }
+    if (page >= PAGE_ENTER && page < PAGE_IFACE_FIRST)
+    {
+        const char *reason = entry_reason(page);
+        copy_cols(l1, page == PAGE_ENTER ? "[ENTER CENTRAL]" : page == PAGE_RECORD ? "[RECORD MACRO]" : "[REPLAY MACRO]");
+        copy_cols(l2, reason != NULL ? reason : "PLUS = GO");
+        return;
+    }
 
-    int p = page - 1;
+    int p = page - PAGE_IFACE_FIRST;
     if (wifi_is_enabled())
     {
         if (p < 2)
@@ -212,26 +293,111 @@ static void menu_show(bool force)
     }
 }
 
-static void enter_menu(void)
+// ─── Pop-up store and reset procedure ───────────────────────────────────────
+
+static void popup_clear(void)
 {
-    ESP_LOGI(TAG, "Central silent: showing the Prog menu");
+    s_menu.popup[0] = '\0';
+    s_menu.popup_valid = false;
+    s_menu.popup_ready = false;
+}
+
+// Called for every screen the central sends, in every state
+static void popup_track(const selector_screen_t *screen)
+{
+    char norm[SELECTOR_MACRO_POPUP_MAX];
+    size_t n = selector_macro_normalize_popup(screen->row, norm, sizeof(norm));
+
+    // Only while the gate is closed: the central then shows its start screen
+    if (s_menu.state == MENU_STATE_MENU && n > 0)
+    {
+        if (s_menu.popup_valid)
+        {
+            if (strcmp(norm, s_menu.popup) == 0 && !s_menu.popup_ready)
+            {
+                s_menu.popup_ready = true;
+                s_menu.reset_active = false;
+                ESP_LOGI(TAG, "Central is back on its start screen");
+            }
+        }
+        else if (s_menu.capture == CAPTURE_FIRST ||
+                 (s_menu.capture == CAPTURE_DIFF && strcmp(norm, s_menu.ref_norm) != 0))
+        {
+            memcpy(s_menu.popup, norm, sizeof(s_menu.popup));
+            s_menu.popup_valid = true;
+            s_menu.popup_ready = true; // a start screen that was just captured is by definition reset
+            s_menu.reset_active = false;
+            s_menu.capture = CAPTURE_NONE;
+            ESP_LOGI(TAG, "Pop-up stored: %s", s_menu.popup);
+        }
+    }
+    memcpy(s_menu.last_norm, norm, sizeof(s_menu.last_norm));
+}
+
+// UNVERIFIED (open questions F1): that a central whose replies stop goes back to its start screen
+// within POPUP_RESET_WAIT_MS has not been checked on a real central.
+static void reset_begin(uint32_t now_ms)
+{
+    s_menu.popup_ready = false;
+    s_menu.reset_active = true;
+    s_menu.reset_start_ms = now_ms;
+}
+
+// ─── State changes ──────────────────────────────────────────────────────────
+
+static void enter_menu(uint32_t now_ms)
+{
+    ESP_LOGI(TAG, "Showing the Prog menu");
     s_menu.state = MENU_STATE_MENU;
     s_menu.page = 0;
     s_menu.dirty = true;
+    selector_bridge_set_reply_gate(false);
     emit_keys(0); // the central's cached key state must be idle while it is silent
+
+    // Reset procedure: the central must show its start screen again (rule on capture: see
+    // capture_t, unverified)
+    memcpy(s_menu.ref_norm, s_menu.last_norm, sizeof(s_menu.ref_norm));
+    s_menu.capture = CAPTURE_DIFF;
+    reset_begin(now_ms);
 }
 
-static void enter_central(void)
+static void enter_central(uint32_t now_ms)
 {
-    ESP_LOGI(TAG, "Central talking: handing the screen back");
+    ESP_LOGI(TAG, "Central transparent: gate open");
     s_menu.state = MENU_STATE_CENTRAL;
     s_menu.handback_mask = s_menu.user_keys; // keys held now stay released until let go
+    s_menu.last_central_ms = now_ms;
+    s_menu.last_key_ms = now_ms;
+    s_menu.reset_active = false; // the next arrival in MENU starts a new reset
+    selector_bridge_set_reply_gate(true);
+}
+
+// PLUS on a menu entry
+static void menu_pick(uint32_t now_ms)
+{
+    switch (s_menu.page)
+    {
+    case PAGE_ENTER:
+        enter_central(now_ms);
+        break;
+    case PAGE_RECORD:
+    case PAGE_REPLAY:
+        if (entry_reason(s_menu.page) == NULL)
+        {
+            ESP_LOGI(TAG, "Macro entry %d picked: not implemented yet", s_menu.page);
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 // ─── Translator callbacks ───────────────────────────────────────────────────
 
 static void on_user_keys(uint8_t pressed)
 {
+    uint32_t now = selector_bridge_now_ms();
+    bool changed = pressed != s_menu.user_keys;
     uint8_t edges = selector_keys_update(&s_menu.keys, pressed, NULL);
     s_menu.user_keys = pressed;
 
@@ -250,12 +416,21 @@ static void on_user_keys(uint8_t pressed)
             s_menu.page = (s_menu.page + count - 1) % count;
             menu_show(true);
         }
+        else if (edges & SELECTOR_KEY_PLUS)
+        {
+            menu_pick(now);
+        }
         break;
     }
     case MENU_STATE_CENTRAL:
+        if (changed)
+        {
+            s_menu.last_key_ms = now;
+        }
         s_menu.handback_mask &= pressed;
         emit_keys((uint8_t)(pressed & ~s_menu.handback_mask));
         break;
+    case MENU_STATE_REPLAY: // the real selector's keys are ignored during a replay
     case MENU_STATE_STATUS:
     default:
         break;
@@ -275,13 +450,41 @@ static void menu_on_msg(void *ctx, selector_dir_t dir, const selector_msg_t *msg
         return;
     }
 
-    // Any valid frame from the central takes the screen back at once
-    s_menu.last_central_ms = selector_bridge_now_ms();
-    if (s_menu.state != MENU_STATE_CENTRAL)
+    uint32_t now = selector_bridge_now_ms();
+    s_menu.last_central_ms = now;
+    if (!s_menu.central_present)
     {
-        enter_central();
+        // Absent to present (also at boot): the first screen from now on is the pop-up
+        s_menu.central_present = true;
+        s_menu.capture = CAPTURE_FIRST;
+        ESP_LOGI(TAG, "Central present");
     }
-    selector_bridge_emit(SELECTOR_DIR_DOWNSTREAM, msg);
+    if (msg->type == SELECTOR_MSG_SCREEN)
+    {
+        popup_track(&msg->u.screen);
+    }
+
+    switch (s_menu.state)
+    {
+    case MENU_STATE_MENU:
+        // The Prog menu owns the screen and the buzzer. The backlight still follows the central,
+        // because it is not repeated and would be lost when the central is entered.
+        if (msg->type == SELECTOR_MSG_BACKLIGHT)
+        {
+            selector_bridge_emit(SELECTOR_DIR_DOWNSTREAM, msg);
+        }
+        break;
+    case MENU_STATE_STATUS:
+        // A valid frame from the central means it is master again
+        enter_central(now);
+        selector_bridge_emit(SELECTOR_DIR_DOWNSTREAM, msg);
+        break;
+    case MENU_STATE_CENTRAL:
+    case MENU_STATE_REPLAY:
+    default:
+        selector_bridge_emit(SELECTOR_DIR_DOWNSTREAM, msg);
+        break;
+    }
 }
 
 static void menu_on_link(void *ctx, selector_side_t side, bool up)
@@ -292,6 +495,8 @@ static void menu_on_link(void *ctx, selector_side_t side, bool up)
     {
         s_menu.dirty = true;
     }
+    // Central side: the panel link is a session (open gate), not presence. Presence and the stored
+    // pop-up are handled in menu_on_msg and menu_on_tick, so nothing to do here.
 }
 
 static void menu_on_mode(void *ctx, bool central_slave)
@@ -305,10 +510,8 @@ static void menu_on_mode(void *ctx, bool central_slave)
     }
     else if (s_menu.state == MENU_STATE_STATUS)
     {
-        // Back to the central: the 3 s rule applies if it does not talk again
-        s_menu.state = MENU_STATE_CENTRAL;
-        s_menu.last_central_ms = selector_bridge_now_ms();
-        s_menu.handback_mask = s_menu.user_keys;
+        // Back to the central: the exit rules apply if it does not talk again
+        enter_central(selector_bridge_now_ms());
     }
 }
 
@@ -316,21 +519,63 @@ static void menu_on_tick(void *ctx, uint32_t now_ms)
 {
     (void)ctx;
 
-    if (s_menu.state == MENU_STATE_CENTRAL &&
+    if (!s_menu.started)
+    {
+        // Boot: the menu shows and the gate closes, the reset procedure waits for the pop-up.
+        // (The gate is open from the port start until this first tick, a few milliseconds.)
+        s_menu.started = true;
+        selector_bridge_set_reply_gate(false);
+        reset_begin(now_ms);
+    }
+
+    // Presence, in every state: lost after CENTRAL_SILENCE_MS without a valid central frame.
+    // Only a loss (or the reset timeout) clears the stored pop-up.
+    if (s_menu.central_present && (uint32_t)(now_ms - s_menu.last_central_ms) >= CENTRAL_SILENCE_MS)
+    {
+        ESP_LOGI(TAG, "Central lost: pop-up cleared");
+        s_menu.central_present = false;
+        s_menu.reset_active = false;
+        s_menu.capture = CAPTURE_NONE;
+        popup_clear();
+    }
+
+    // A key that is held keeps the key idle timer restarting until it is released.
+    if (s_menu.state == MENU_STATE_CENTRAL && s_menu.user_keys != 0)
+    {
+        s_menu.last_key_ms = now_ms;
+    }
+    // Exit rules. UNVERIFIED in practice (open questions D2, F8): both are tuning values.
+    if ((s_menu.state == MENU_STATE_CENTRAL || s_menu.state == MENU_STATE_REPLAY) &&
         (uint32_t)(now_ms - s_menu.last_central_ms) >= CENTRAL_SILENCE_MS)
     {
-        enter_menu();
+        enter_menu(now_ms);
+    }
+    else if (s_menu.state == MENU_STATE_CENTRAL &&
+             (uint32_t)(now_ms - s_menu.last_key_ms) >= CENTRAL_KEY_IDLE_MS)
+    {
+        enter_menu(now_ms);
     }
 
     if (s_menu.state == MENU_STATE_MENU)
     {
+        if (s_menu.reset_active && (uint32_t)(now_ms - s_menu.reset_start_ms) >= POPUP_RESET_WAIT_MS)
+        {
+            // The central did not show its start screen in time
+            ESP_LOGW(TAG, "Reset wait timed out: pop-up cleared");
+            s_menu.reset_active = false;
+            s_menu.capture = CAPTURE_NONE; // a failed capture must not stay armed
+            popup_clear();
+        }
+
+        bool entry_page = s_menu.page >= PAGE_ENTER && s_menu.page < PAGE_IFACE_FIRST;
+        uint32_t poll_ms = entry_page ? ENTRY_POLL_MS : NET_POLL_MS;
         if (s_menu.dirty)
         {
             s_menu.dirty = false;
             s_menu.last_net_ms = now_ms;
             menu_show(true);
         }
-        else if ((uint32_t)(now_ms - s_menu.last_net_ms) >= NET_POLL_MS)
+        else if ((uint32_t)(now_ms - s_menu.last_net_ms) >= poll_ms)
         {
             s_menu.last_net_ms = now_ms;
             menu_show(false);
@@ -344,6 +589,8 @@ static const selector_translator_t s_menu_translator = {
     .on_link = menu_on_link,
     .on_mode = menu_on_mode,
     .on_tick = menu_on_tick,
+    .on_reply = NULL, // recording and replay (milestone B) use it
+    .gate_closed_at_start = true, // the menu keeps the central silent from the first frame
 };
 
 const selector_translator_t *selector_tr_menu(void)

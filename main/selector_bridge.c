@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "selector_bridge.h"
+#include "selector_macro.h"
 
 #define TAG "SELECTOR"
 
@@ -38,7 +39,8 @@
 
 #define BRIDGE_TASK_STACK 4096
 #define BRIDGE_TASK_PRIO 4
-#define BRIDGE_IN_DEPTH 8
+// Each central frame can queue a reply event and a message event, so this is deeper than the port queues
+#define BRIDGE_IN_DEPTH 16
 #define PORT_IN_DEPTH 8
 
 static QueueHandle_t s_bridge_in;   // selector_evt_t, from both ports
@@ -82,6 +84,11 @@ void selector_bridge_emit(selector_dir_t dir, const selector_msg_t *msg)
     }
 }
 
+void selector_bridge_set_reply_gate(bool open)
+{
+    selector_port_set_reply_gate(s_panel, open);
+}
+
 // ─── Identity translator ────────────────────────────────────────────────────
 
 static void identity_on_msg(void *ctx, selector_dir_t dir, const selector_msg_t *msg)
@@ -96,6 +103,7 @@ static const selector_translator_t s_identity = {
     .on_link = NULL,
     .on_mode = NULL,
     .on_tick = NULL,
+    .on_reply = NULL,
 };
 
 const selector_translator_t *selector_tr_identity(void)
@@ -119,6 +127,12 @@ static void bridge_dispatch(const selector_evt_t *evt)
         if (s_tr->on_link != NULL)
         {
             s_tr->on_link(s_tr->ctx, evt->side, evt->up);
+        }
+        break;
+    case SELECTOR_EVT_REPLY:
+        if (s_tr->on_reply != NULL)
+        {
+            s_tr->on_reply(s_tr->ctx, evt->keys, evt->counted);
         }
         break;
     case SELECTOR_EVT_MODE:
@@ -168,6 +182,11 @@ bool selector_bridge_start(const selector_translator_t *translator)
         ESP_LOGE(TAG, "Wire self-test failed");
         return false;
     }
+    if (!selector_macro_selftest())
+    {
+        ESP_LOGE(TAG, "Macro self-test failed");
+        return false;
+    }
 
     s_tr = translator != NULL ? translator : &s_identity;
     s_bridge_in = xQueueCreate(BRIDGE_IN_DEPTH, sizeof(selector_evt_t));
@@ -194,6 +213,7 @@ bool selector_bridge_start(const selector_translator_t *translator)
         .reply_timeout_ms = 0,
         .to_bridge = s_bridge_in,
         .from_bridge = s_panel_in,
+        .reply_gate_closed = s_tr->gate_closed_at_start,
     };
     const selector_port_cfg_t selector_cfg = {
         .role = SELECTOR_ROLE_HOST,
