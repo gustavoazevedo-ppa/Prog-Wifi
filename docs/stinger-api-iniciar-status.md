@@ -115,7 +115,7 @@ O corpo de todas as respostas (exceto `401`) tem o mesmo formato do `/status`: `
 | 409 | Já existe um teste em andamento | estado do teste atual (o estado dele não é alterado) |
 | 409 | Atualização de firmware, formatação ou reboot em andamento | `status: 3`, `"firmware update in progress, try again later"` |
 | 409 | (planejado) O seletor está em uso: o menu do Prog está em modo transparente. Vale para qualquer execução, não só macros | `status: 3`, `"selector in use, try again later"` (o estado armazenado não é alterado) |
-| 500 | Falha de download (timeout, 5xx), hex inválido ou erro interno | `status: 3` e a causa em `message` |
+| 500 | Falha de download (timeout, 5xx), hex inválido, macro inválida (`"preset file is not a valid macro"`) ou erro interno | `status: 3` e a causa em `message` |
 
 Só o código **200** indica que o teste começou.
 

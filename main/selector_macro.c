@@ -106,11 +106,8 @@ static tok_t next_token(const uint8_t *d, size_t len, size_t *pos, uint32_t *val
         }
     }
 
-    // A token ends at a blank: "3P" or "PS" are not tokens
-    if (tok != TOK_BAD_CHAR && tok != TOK_BAD_NUM && i < len && !is_blank(d[i]))
-    {
-        tok = TOK_BAD_CHAR;
-    }
+    // Blanks between tokens are optional: "3P2p" is 3, P, 2, p and "PS" is P, S. A number ends at
+    // the first character that is not a digit, so "1 5" is two numbers (1 and 5, which add up).
     *pos = i;
     return tok;
 }
@@ -580,9 +577,17 @@ bool selector_macro_selftest(void)
             {"#H\n65535", SELECTOR_MACRO_OK},
             {"", SELECTOR_MACRO_ERR_NO_HEADER},
             {"3 P", SELECTOR_MACRO_ERR_NO_HEADER},
+            {"#H\n3P", SELECTOR_MACRO_OK},
+            {"#H\n3P2p4S1s10O2o30", SELECTOR_MACRO_OK},
+            {"#H\nPS", SELECTOR_MACRO_OK},
+            {"#H\n3P\r\n2\tp", SELECTOR_MACRO_OK},
+            {"#H\n1 5", SELECTOR_MACRO_OK},
             {"#H\n3 X", SELECTOR_MACRO_ERR_BAD_CHAR},
-            {"#H\n3P", SELECTOR_MACRO_ERR_BAD_CHAR},
+            {"#H\n3PX", SELECTOR_MACRO_ERR_BAD_CHAR},
+            {"#H\n3P#", SELECTOR_MACRO_ERR_BAD_CHAR},
             {"#H\n#", SELECTOR_MACRO_ERR_BAD_CHAR},
+            {"#H\n1 0", SELECTOR_MACRO_ERR_BAD_NUMBER},
+            {"#H\n3P0", SELECTOR_MACRO_ERR_BAD_NUMBER},
             {"#H\n0", SELECTOR_MACRO_ERR_BAD_NUMBER},
             {"#H\n65536", SELECTOR_MACRO_ERR_BAD_NUMBER},
             {"#H\n99999999999", SELECTOR_MACRO_ERR_BAD_NUMBER},
@@ -590,6 +595,43 @@ bool selector_macro_selftest(void)
         for (size_t i = 0; i < sizeof(vec) / sizeof(vec[0]); i++)
         {
             if (selector_macro_validate((const uint8_t *)vec[i].text, strlen(vec[i].text)) != vec[i].want)
+            {
+                return false;
+            }
+        }
+        // Tokens without blanks decode like the same tokens with blanks, and two numbers split by
+        // a blank add up
+        {
+            static const char compact[] = "#H\n3P2p";
+            static const uint8_t want[] = {0, 0, 0, SELECTOR_KEY_PLUS, SELECTOR_KEY_PLUS};
+            selector_macro_iter_t it;
+            uint8_t m;
+            if (!selector_macro_iter_init(&it, (const uint8_t *)compact, strlen(compact)))
+            {
+                return false;
+            }
+            for (size_t i = 0; i < sizeof(want); i++)
+            {
+                if (!selector_macro_iter_next(&it, &m) || m != want[i])
+                {
+                    return false;
+                }
+            }
+            if (selector_macro_iter_next(&it, &m))
+            {
+                return false;
+            }
+            static const char split[] = "#H\n1 5";
+            uint32_t total = 0;
+            if (!selector_macro_iter_init(&it, (const uint8_t *)split, strlen(split)))
+            {
+                return false;
+            }
+            while (selector_macro_iter_next(&it, &m))
+            {
+                total++;
+            }
+            if (total != 6)
             {
                 return false;
             }

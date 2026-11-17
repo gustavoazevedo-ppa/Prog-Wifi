@@ -7,7 +7,9 @@
  *   3 P 2 p 4 S 1 s 10 O 2 o 30
  *
  * A number is a count of replies sent with the current key state (two in a row add up). A letter
- * is a key token (M P O S press, m p o s release) that takes effect on the next reply.
+ * is a key token (M P O S press, m p o s release) that takes effect on the next reply. Blanks
+ * (space, tab, CR, LF) between tokens are optional: "3P2p" reads like "3 P 2 p", and a number
+ * ends at the first character that is not a digit, so "1 5" is 1 then 5, not 15.
  */
 #ifndef SELECTOR_MACRO_H
 #define SELECTOR_MACRO_H

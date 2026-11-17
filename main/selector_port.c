@@ -315,13 +315,12 @@ static void panel_handle_frame(selector_port_t *p, const selector_frame_t *frame
     memset(&evt, 0, sizeof(evt));
     if (replied)
     {
-        // Which key state the central just saw. Only replies to 'S' and '?' are counted: it is
-        // not known yet whether the replies to 'B' and 'L' carry key state (open questions F3, S7).
-        uint8_t func = frame->bytes[3];
+        // Which key state the central just saw. Every reply carries the key state, whatever the
+        // function, so every reply counts as a poll for macros (open questions F3, resolved).
         evt.type = SELECTOR_EVT_REPLY;
         evt.side = SELECTOR_SIDE_CENTRAL;
         evt.keys = reply_keys;
-        evt.counted = func == SELECTOR_FUNC_SCREEN || func == SELECTOR_FUNC_POLL;
+        evt.counted = true;
         port_send_evt(p, &evt);
         memset(&evt, 0, sizeof(evt));
     }

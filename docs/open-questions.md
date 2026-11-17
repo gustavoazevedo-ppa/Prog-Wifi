@@ -54,7 +54,6 @@ off by default and has no HTTP switch yet (see D4).
 
 | ID | Question | Notes |
 |---|---|---|
-| D2 | Is the 3 s silence rule right in practice? A central that pauses briefly may flash the menu. | Tune `CENTRAL_SILENCE_MS` in `selector_tr_menu.c`. The macro design adds a second define, `CENTRAL_KEY_IDLE_MS` (3 s without a key press), see section F. |
 | D3 | How to expose the frame tap and the bridge counters: an admin endpoint, a build option, or both? Counters could also go into `/info`. | Needed for the bench items above. Nothing is decided. |
 | D4 | The endpoints for reading a config from a reference central (`POST /admin/central/read`, `GET /admin/central/config`) are proposals. | Confirm names and format before building them. |
 
@@ -67,14 +66,7 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 
 | ID | Question | Blocks | How |
 |---|---|---|---|
-| F1 | When the Prog stops replying to a central that is in one of its menus, does the central show its start screen (model and version) again, and after how long? Is `POPUP_RESET_WAIT_MS` (5 s) enough for every central? Measured on the bench central that shows `POP CONNECT/V0.1`: an unanswered central repeats its start screen about every 1.09 s. `CENTRAL_SILENCE_MS` (3 s, the presence threshold) must exceed the retry interval of every central, other models unknown. | The reset procedure, the 5 s limit and the 3 s presence threshold. | Real central: stop the replies, read the frame tap, time it, on several models. |
-| F2 | Is the pop-up capture rule reliable (first screen when the central goes from absent to present, boot included, or after an exit the first screen that differs from the last one forwarded)? What if the Prog boots while the central is in a menu? Does any start screen contain changing text? | Pop-up capture and the match that marks the central as reset. | Frame tap on several centrals and firmware versions. |
-| F3 | Do the replies to `'B'` and `'L'` carry key state (same question as S7)? | Which frames count as a poll. Until known, only `'S'` and `'?'` count. | Send a beep and a backlight frame and read the reply. |
-| F4 | Is the central's poll rate steady while idle and while busy (saving, long messages)? A poll count is only right if the rate is steady, or if the central stops polling while busy. | How much a macro depends on timing, and whether wait-for-screen is needed soon. | Frame tap timestamps during a typical parameter change. |
-| F5 | What press and release length (in replies) does each central need? A recorded macro replays exactly what the central saw, so only hand-edited macros are at risk. | Guidance for people who edit macros. | Replay a test macro with 1, 2 and 3 reply presses. |
-| F6 | Does the central finish its last operation during the trailing wait (the recording keeps it, up to the 3 s key idle time) before the reset procedure stops the replies? | Whether the trailing wait is enough. | Record a save, replay it, check the result on the central. |
 | F7 | Which dropped-frame reasons must fail a replay? The design counts framing, checksum and length errors and ignores unknown functions (jig / BLE functions are dropped by design). | The success rule. | Review the drop reasons in `selector_wire` and a tap of a real central. |
-| F8 | Does `CENTRAL_KEY_IDLE_MS` (3 s) get in the way while recording, for central operations that take longer than 3 s? A key press or a manual edit of the macro works around it. | Tuning, maybe a longer value while recording. | Record a real parameter change. |
 | F9 | `POST /iniciar` is refused with 409 while the Prog is in transparent mode, for every run and not only for macros. Is that acceptable for normal preset runs? | The acceptance rule in `preset_server`. | Decided for now, confirm with the Stinger team. |
 
 ---
@@ -107,3 +99,12 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 | Write wear | Not a concern, the central avoids repeated identical writes and levels wear |
 | Central type `0xFF` GPIO mode, TX backup / restore | Out of scope |
 | Master-mode source files | Kept in another repository, extracted into `connect-protocol.md` |
+| D2: is the 3 s silence rule right in practice? | Yes (bench). `CENTRAL_SILENCE_MS` stays at 3000, now the presence threshold. `CENTRAL_KEY_IDLE_MS` (3 s with no key pressed, restarted by a held key) was added for macros |
+| F1: central behavior when the Prog stops replying | On the bench central (`POP CONNECT/V0.1`) it repeats its start screen about every 1 s (1.09 s measured) and shows it again after about 1 s without communication. Other models may take longer, but certainly under 5 s, so `POPUP_RESET_WAIT_MS` (5000) stays. The 3 s presence threshold still has to exceed the retry interval of every model |
+| F2: pop-up capture rule | Confirmed OK on the bench: first screen when the central goes from absent to present (boot included), or after an exit the first screen that differs from the last one forwarded |
+| F4: central poll rate | Steady, so counting polls for macro timing is valid. Wait-for-screen is not needed for now |
+| F8: does the 3 s key idle time get in the way while recording? | No (bench). Keep `CENTRAL_KEY_IDLE_MS` at 3000 |
+| F3: do the replies to `'B'` and `'L'` carry key state? | Yes (project owner): every reply carries the pressed keys in its payload, so every reply the panel port sends counts as a poll for macros, whatever the function. The Milestone B code still counts only `'S'` and `'?'`: change it in milestone C. Macros recorded before that change were counted the old way and must be recorded again |
+| F5: press and release length each central needs | Varies per central. Not a concern for recorded macros, because the macro holds the values seen on the central it was recorded on. Only hand-edited macros need care |
+| F6: does the central finish its last operation during the trailing wait? | Yes (project owner) |
+| Version marker in the macro format | Decided: none. A change in what the syntax means (as the F3 poll count did) is handled by recording the macros again. Unknown tokens are still rejected, so new token types stay safe for old firmware |

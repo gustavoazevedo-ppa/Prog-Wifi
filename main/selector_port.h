@@ -45,7 +45,7 @@ typedef struct
     selector_dir_t dir;
     bool up;
     uint8_t keys;  // SELECTOR_EVT_REPLY: key mask the reply carried (what the central saw)
-    bool counted;  // SELECTOR_EVT_REPLY: the reply answered an 'S' or '?' frame (a counted poll)
+    bool counted;  // SELECTOR_EVT_REPLY: the reply counts as a poll (always true: every reply carries key state)
     selector_msg_t msg;
 } selector_evt_t;
 

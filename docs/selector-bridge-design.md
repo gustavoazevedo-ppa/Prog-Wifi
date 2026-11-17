@@ -474,7 +474,7 @@ macro from a preset. It can be edited with any text editor and uploaded again.
 
 - **Header line:** `#` followed by the central's start screen (the stored pop-up, see below), ended by
   the first CR or LF. It is informational. The Prog does not compare it with the central.
-- **Body:** tokens separated by blanks (space, tab, CR, LF).
+- **Body:** tokens. Blanks (space, tab, CR, LF) between tokens are optional and ignored, so `3P2p` reads like `3 P 2 p` and `PS` is a chord. A number ends at the first character that is not a digit, so two numbers split by a blank add up: `1 5` is 1 then 5 (6 replies), not 15.
   - A **number** (decimal, 1 to 65535) means "send this many replies with the current key state".
     Two numbers in a row add up.
   - A **key token** is a letter: `M` = MINUS, `P` = PLUS, `O` = OK (`<-`), `S` = SEL (`->`).
@@ -483,9 +483,10 @@ macro from a preset. It can be edited with any text editor and uploaded again.
     chord (for example PLUS and MINUS) is written.
   - The state at the start is every key released. Keys still pressed at the end are released
     implicitly.
-- **Poll (reply) count:** one reply to a central frame of function `'S'` or `'?'` while the reply
-  gate is open. Frames `'B'` and `'L'` are answered but not counted until it is known whether their
-  replies carry key state (`docs/open-questions.md`, S7 and F3).
+- **Poll (reply) count:** every reply the panel port sends to the central while the reply gate is
+  open, whatever the function, because every reply carries the key state (`docs/open-questions.md`,
+  F3). The Milestone B code still counts only `'S'` and `'?'`. It changes in milestone C, and macros
+  recorded before that must be recorded again.
 - **Size:** at most `PRESET_BIN_MAX` (2048 bytes, the preset scratchpad). A press and release with
   waits is about 8 bytes at a 100 ms poll, so roughly 250 key presses fit.
 - **Validation** runs over the whole file when it is downloaded. A macro with a character that is not
@@ -538,13 +539,13 @@ Transitions:
 - **Stored pop-up:** the central's start screen (model and firmware version), kept in RAM as one line.
   Each of the two rows is trimmed of leading and trailing spaces, empty rows are dropped, and the rows
   are joined with `/`, for example `MODEL X/V1.2`. Comparisons use the same form.
-- **Capture [unverified, rule to confirm on the bench]:** while the gate is closed, the first screen
+- **Capture [confirmed on one central, F2]:** while the gate is closed, the first screen
   received when the central goes from absent to present (including boot), and, after an exit to the
   menu, the first screen that differs from the last one the central sent before the gate closed.
 - **Presence:** the translator tracks it in every state, from any valid central frame, with its own
   timer. The central is absent after `CENTRAL_SILENCE_MS` (3000) without one. A central that keeps
   repeating its start screen while unanswered is present. Because this threshold must exceed the
-  central's retry interval, see F1 in `open-questions.md` (1.09 s measured on one central).
+  central's retry interval, see F1 in `open-questions.md` (1.09 s measured on one central, other models expected under 5 s).
 - **Clear:** when presence is lost, and when the reset wait times out. Never because of port link
   events, so a central that pauses polling for more than 500 ms while answered keeps its pop-up.
   Master mode (6.3) is not implemented: a central silent on purpose in master mode will also count
@@ -605,7 +606,9 @@ Transitions:
   its ASCII bytes, so the existing `GET /admin/preset` hex dump already shows it.
 - **Fetch:** the download keeps the three-URL order and the fixed name `exemplo.conf`. If the first
   non-blank character after an optional BOM is `#`, the file skips `hex_decode()`, is validated as a
-  macro, and is copied as it is. Any other file follows the hex path unchanged.
+  macro, and is copied as it is, from the `#` on (the BOM and blanks before it are not stored). An
+  invalid macro fails the run with `500` and the message `preset file is not a valid macro`. Any other
+  file follows the hex path unchanged.
 - **Web page:** the **Download .conf** button saves the buffer as raw text when its first byte is
   `0x23`, and as hex otherwise. The file is then uploaded to the preset server under `exemplo.conf`.
 - **Refusal:** `POST /iniciar` is refused with `409` while the Prog is in `CENTRAL` (including
@@ -619,7 +622,7 @@ Transitions:
 | Piece | Change |
 |---|---|
 | `selector_macro.c/.h` (new, pure C, no ESP-IDF) | validate, run-length encoder, script iterator |
-| `selector_port` | reply gate; a per-reply event with the key mask sent and whether it was counted |
+| `selector_port` | reply gate; a per-reply event with the key mask sent (every reply counts, see F3) |
 | `selector_bridge` | route the reply event to the translator |
 | `selector_tr_menu` | states, menu entries, pop-up store and reset procedure, recording and replay (split into its own translator if it grows) |
 | `preset_server` | macro fork in the fetch, accessors for the scratchpad, replay hand-off in place of the simulated run, the 409 check |
