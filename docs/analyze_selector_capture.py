@@ -8,8 +8,8 @@ Usage:
 Expected capture (Saleae Logic 2: export raw digital data, CSV):
     Channel 0 = selector replies (selector TX)       UART 9600 8N1
     Channel 1 = host frames (ESP32 TX)               UART 9600 8N1
-    Channel 2 = SEL key contact                      0 = pressed
-    Channel 3 = OK key contact                       0 = pressed
+    Channel 2 = RIGHT key contact (formerly SEL)     0 = pressed
+    Channel 3 = LEFT key contact (formerly OK)       0 = pressed
     Channel 4 = + key contact                        0 = pressed
     Channel 5 = - key contact                        0 = pressed
 Change the constants below for another wiring.
@@ -36,11 +36,11 @@ BAUD = 9600
 BIT = 1.0 / BAUD
 
 CH_REPLY, CH_HOST = 0, 1
-KEY_CHANNELS = {"SEL": 2, "OK": 3, "+": 4, "-": 5}
+KEY_CHANNELS = {"RIGHT": 2, "LEFT": 3, "+": 4, "-": 5}
 
 # Where each key sits in the reply: (data byte index, level bit). The pulse low bit is
 # one below the level bit and the pulse high bit two below (docs/selector-protocol.md).
-KEY_BITS = {"-": (0, 7), "+": (0, 4), "OK": (1, 7), "SEL": (1, 4)}
+KEY_BITS = {"-": (0, 7), "+": (0, 4), "LEFT": (1, 7), "RIGHT": (1, 4)}
 
 START, STOP, STOP_ALT = 0x7E, 0x81, 0x51
 MIN_FRAME, MAX_FRAME = 6, 64
@@ -261,7 +261,7 @@ def report_key_encoding(replies):
             continue
         for key, triple in key_levels(r).items():
             census[key][triple] += 1
-    for key in ("-", "+", "OK", "SEL"):
+    for key in ("-", "+", "LEFT", "RIGHT"):
         print("  %-3s: %s" % (key, ", ".join("%s x%d" % (t, n) for t, n in sorted(census[key].items()))))
     print("  Expected if the pulse bits are a 'last edge' indicator: pressed (0, 1, 0),")
     print("  released after an edge (1, 0, 1), released with no edge seen since power-up (1, 0, 0).")
@@ -310,7 +310,7 @@ def report_keys(times, states, replies, gaps):
     if gaps:
         print("  Host silent for %s: %d presses in those periods are left out below." % (
             ", ".join("%.3f-%.3f s" % g for g in gaps), in_gap))
-    for k in ("-", "+", "OK", "SEL"):
+    for k in ("-", "+", "LEFT", "RIGHT"):
         durs = [b - a for a, b in presses[k]]
         print("  %-3s: %2d presses, duration %s" % (k, len(durs), summarize(durs)))
 
@@ -384,7 +384,7 @@ def report_keys(times, states, replies, gaps):
     print()
     print("  Pulse-high flip (1,0,0) -> (1,0,1) with no pressed reply in between (a hidden press):")
     hidden = 0
-    for k in ("-", "+", "OK", "SEL"):
+    for k in ("-", "+", "LEFT", "RIGHT"):
         prev = None
         for r in samples:
             cur = key_levels(r)[k]

@@ -18,8 +18,8 @@ static const struct
 } s_keys[] = {
     {'B', 'b', SELECTOR_KEY_MINUS}, // Baixo
     {'C', 'c', SELECTOR_KEY_PLUS},  // Cima
-    {'E', 'e', SELECTOR_KEY_OK},    // Esquerda
-    {'D', 'd', SELECTOR_KEY_SEL},   // Direita
+    {'E', 'e', SELECTOR_KEY_LEFT},    // Esquerda
+    {'D', 'd', SELECTOR_KEY_RIGHT},   // Direita
 };
 #define KEY_COUNT (sizeof(s_keys) / sizeof(s_keys[0]))
 
@@ -436,7 +436,7 @@ bool selector_macro_selftest(void)
 
     // A run longer than 65535 is split in numbers that add up
     {
-        static const uint8_t masks[] = {0, SELECTOR_KEY_SEL};
+        static const uint8_t masks[] = {0, SELECTOR_KEY_RIGHT};
         static const uint32_t counts[] = {70000, 1};
         if (!st_encode_is("H", masks, counts, 2, "#H\n65535 4465 D 1 d", &e, buf, sizeof(buf)))
         {
@@ -453,7 +453,7 @@ bool selector_macro_selftest(void)
             total++;
             last = m;
         }
-        if (total != 70001 || last != SELECTOR_KEY_SEL)
+        if (total != 70001 || last != SELECTOR_KEY_RIGHT)
         {
             return false;
         }
@@ -469,7 +469,7 @@ bool selector_macro_selftest(void)
         }
         for (int i = 0; i < 50; i++)
         {
-            if (!selector_macro_enc_reply(&e, (i & 1) ? 0 : SELECTOR_KEY_OK))
+            if (!selector_macro_enc_reply(&e, (i & 1) ? 0 : SELECTOR_KEY_LEFT))
             {
                 refused = true;
             }
@@ -493,7 +493,7 @@ bool selector_macro_selftest(void)
         }
         for (int i = 0; i < 60; i++)
         {
-            uint8_t k = (i & 1) ? (uint8_t)(SELECTOR_KEY_OK | SELECTOR_KEY_SEL) : SELECTOR_KEY_OK;
+            uint8_t k = (i & 1) ? (uint8_t)(SELECTOR_KEY_LEFT | SELECTOR_KEY_RIGHT) : SELECTOR_KEY_LEFT;
             if (!selector_macro_enc_reply(&e, k))
             {
                 refused = true;

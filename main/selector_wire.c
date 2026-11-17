@@ -5,11 +5,11 @@
 #include <string.h>
 #include "selector_wire.h"
 
-// Wire key bits (active low): Data0 = MINUS / PLUS levels, Data1 = OK ("<-") / SEL ("->") levels
+// Wire key bits (active low): Data0 = MINUS / PLUS levels, Data1 = LEFT ("<-") / RIGHT ("->") levels
 #define WIRE_MINUS_LEVEL 0x80
 #define WIRE_PLUS_LEVEL 0x10
-#define WIRE_OK_LEVEL 0x80
-#define WIRE_SEL_LEVEL 0x10
+#define WIRE_LEFT_LEVEL 0x80
+#define WIRE_RIGHT_LEVEL 0x10
 
 uint8_t selector_checksum(const uint8_t *frame, size_t len)
 {
@@ -48,13 +48,13 @@ static uint8_t keys_from_wire(uint8_t d0, uint8_t d1)
     {
         pressed |= SELECTOR_KEY_PLUS;
     }
-    if (!(d1 & WIRE_OK_LEVEL))
+    if (!(d1 & WIRE_LEFT_LEVEL))
     {
-        pressed |= SELECTOR_KEY_OK;
+        pressed |= SELECTOR_KEY_LEFT;
     }
-    if (!(d1 & WIRE_SEL_LEVEL))
+    if (!(d1 & WIRE_RIGHT_LEVEL))
     {
-        pressed |= SELECTOR_KEY_SEL;
+        pressed |= SELECTOR_KEY_RIGHT;
     }
     return pressed;
 }
@@ -72,13 +72,13 @@ static void keys_to_wire(uint8_t pressed, uint8_t *d0, uint8_t *d1)
     {
         a &= (uint8_t)~WIRE_PLUS_LEVEL;
     }
-    if (pressed & SELECTOR_KEY_OK)
+    if (pressed & SELECTOR_KEY_LEFT)
     {
-        b &= (uint8_t)~WIRE_OK_LEVEL;
+        b &= (uint8_t)~WIRE_LEFT_LEVEL;
     }
-    if (pressed & SELECTOR_KEY_SEL)
+    if (pressed & SELECTOR_KEY_RIGHT)
     {
-        b &= (uint8_t)~WIRE_SEL_LEVEL;
+        b &= (uint8_t)~WIRE_RIGHT_LEVEL;
     }
     *d0 = a;
     *d1 = b;

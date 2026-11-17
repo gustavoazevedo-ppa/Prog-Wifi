@@ -214,14 +214,14 @@ Data1 — **confirmed on a real selector** (by the project owner): the header st
 
 | Bits | Key | Label on the board |
 |---|---|---|
-| 7 (level), 6, 5 | `OK` | `OK`, or `<-` (left arrow) on some selectors |
-| 4 (level), 3, 2 | `SEL` | `SEL`, or `->` (right arrow) on some selectors |
+| 7 (level), 6, 5 | `LEFT` (formerly `OK`) | `OK`, or `<-` (left arrow) on some selectors |
+| 4 (level), 3, 2 | `RIGHT` (formerly `SEL`) | `SEL`, or `->` (right arrow) on some selectors |
 | 1:0 | unused | |
 
 This agrees with the alarm code, which calls Data1 bit 7 "left" and bit 4 "right": in its
 menus left is "yes / confirm / previous" and right is "no / next". So the same two physical
 keys are called OK / SEL or left / right depending on the selector variant. The ESP32 firmware
-uses the names `OK` and `SEL`, and its menu navigates with `SEL` (next) and `OK` (previous).
+uses the names `LEFT` and `RIGHT` (formerly `OK` and `SEL`), and its menu navigates with `RIGHT` (next) and `LEFT` (previous).
 
 Only the **level** bits are used by the alarm code.
 
@@ -235,12 +235,12 @@ key the three bits (level, pulse low, pulse high) take these values:
 | Released, after an edge | 1 | 0 | 1 | Data0 `B4` (idle `B4 B4`) |
 | Released, no edge seen since the selector started | 1 | 0 | 0 | e.g. Data0 `B0`, Data1 `94` |
 
-- Examples of the other keys pressed: `+` gives Data0 `A8`, OK gives Data1 `54`, SEL gives
-  Data1 `88` or `A8` (depending on the OK pulse-high bit).
+- Examples of the other keys pressed: `+` gives Data0 `A8`, LEFT gives Data1 `54`, RIGHT gives
+  Data1 `88` or `A8` (depending on the LEFT pulse-high bit).
 - The pulse bits look like a "last edge" indicator (falling = pressed, rising = released), which
   is redundant with the level bit. The third state shows up for a key that has not been pressed
   and released since the selector powered up. It is the same on every power-up (seen on two
-  boots): `+` and OK start with pulse high 0 and `-` and SEL start with pulse high 1, so the first
+  boots): `+` and LEFT start with pulse high 0 and `-` and RIGHT start with pulse high 1, so the first
   replies after power-up are Data0 `B0` and Data1 `94` (reply `7E 08 01 3F B0 94 93 81` to the
   first poll). Each key moves to the normal released state (`B4 B4`) after its first press and
   release.

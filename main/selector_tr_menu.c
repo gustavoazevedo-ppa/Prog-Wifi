@@ -701,12 +701,12 @@ static void on_user_keys(uint8_t pressed)
             s_menu.result_active = false; // this key press only dismisses the result page
             s_menu.dirty = true;
         }
-        else if (edges & SELECTOR_KEY_SEL)
+        else if (edges & SELECTOR_KEY_RIGHT)
         {
             s_menu.page = (s_menu.page + 1) % count;
             menu_show(true);
         }
-        else if (edges & SELECTOR_KEY_OK)
+        else if (edges & SELECTOR_KEY_LEFT)
         {
             s_menu.page = (s_menu.page + count - 1) % count;
             menu_show(true);

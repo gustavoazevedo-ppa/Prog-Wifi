@@ -59,7 +59,7 @@ Non-goals (for now)
 | 17 | The encrypted variant is `byte ^ checksum ^ 0xAA` over ID, Function, Data and Counter (verified against `PROTECT.c`). It is implemented as a frame profile transform, later. |
 | 18 | A later admin action reads the configuration from a reference central and returns it as hex, the source of the preset files. |
 | 19 | Out of scope: the central type `0xFF` GPIO-only mode, and TX backup / restore. |
-| 20 | The Prog menu is the default screen from boot. In phase 1 the central takes the screen on its first valid frame, and the menu returns after 3 s without one (section 7b). The macro design replaces the automatic hand-over with an explicit `[ENTER CENTRAL]` entry (decisions 25 and 26, section 7c). Navigation is manual with the arrow keys (`SEL` next, `OK` previous). |
+| 20 | The Prog menu is the default screen from boot. In phase 1 the central takes the screen on its first valid frame, and the menu returns after 3 s without one (section 7b). The macro design replaces the automatic hand-over with an explicit `[ENTER CENTRAL]` entry (decisions 25 and 26, section 7c). Navigation is manual with the arrow keys (`RIGHT` next, `LEFT` previous). |
 | 21 | The menu shows all interfaces enabled in the firmware, even when down (IP `0.0.0.0`, real MAC), after a project / version page. During master mode the selector shows `PROGRAMMING...`. |
 | 22 | The host port polls keys about every 40 ms and sends screens only on change plus a 1 s refresh. The selector has no no-host timeout, and measured data shows a 100 ms poll reports only 65% of quick presses. |
 | 23 | The key state given to the central is not latched: a tap shorter than the central's own poll is lost, as with a direct connection. Revisit after the real-central test (`docs/open-questions.md`, D6). |
@@ -175,9 +175,9 @@ Mapping notes
 - `SCREEN`: the full 38-byte frame maps to two 16-character rows. A short `'S'` frame
   writes its characters from the start and leaves the rest unchanged. **[unverified]**
   whether the real selector clears the rest instead; confirm on hardware and adjust.
-- `KEYS`: canonical bits `SELECTOR_KEY_MINUS`, `PLUS`, `OK`, `SEL` (pressed = 1). The wire is
-  active-low (idle `0xB4 0xB4`). Data1 bit 7 is `OK` and bit 4 is `SEL`, confirmed on a real
-  selector. On some selectors these two keys are labelled `<-` (OK) and `->` (SEL). The mapping
+- `KEYS`: canonical bits `SELECTOR_KEY_MINUS`, `PLUS`, `LEFT`, `RIGHT` (pressed = 1). The wire is
+  active-low (idle `0xB4 0xB4`). Data1 bit 7 is `LEFT` and bit 4 is `RIGHT`, confirmed on a real
+  selector. These two keys are labelled `<-` and `->` on some selectors, and older documents call them OK (LEFT) and SEL (RIGHT). The mapping
   lives in one place in the codec. The pulse bits are not forwarded: on a real selector they only
   repeat the level (a "last edge" indicator, see `selector-protocol.md` section 4), and the
   replies to the central are rebuilt with the idle pulse-bit pattern.
@@ -415,8 +415,8 @@ Transitions
 
 ### Key handling
 
-- In `MENU`, rising edges of `SEL` (`->`, right arrow) and `OK` (`<-`, left arrow) navigate: `SEL`
-  goes to the next page, `OK` to the previous, wrapping at both ends. Other keys, including
+- In `MENU`, rising edges of `RIGHT` (`->`, right arrow) and `LEFT` (`<-`, left arrow) navigate: `RIGHT`
+  goes to the next page, `LEFT` to the previous, wrapping at both ends. Other keys, including
   PLUS and MINUS, are ignored. There is no auto-rotation.
 - On entering `MENU` the translator sends an idle `KEYS` upstream once, so the panel port's cached
   key state is idle while the central is silent.
@@ -477,7 +477,7 @@ macro from a preset. It can be edited with any text editor and uploaded again.
 - **Body:** tokens. Blanks (space, tab, CR, LF) between tokens are optional and ignored, so `3C2c` reads like `3 C 2 c` and `CD` is a chord. A number ends at the first character that is not a digit, so two numbers split by a blank add up: `1 5` is 1 then 5 (6 replies), not 15.
   - A **number** (decimal, 1 to 65535) means "send this many replies with the current key state".
     Two numbers in a row add up.
-  - A **key token** is a letter: `B` = MINUS (Baixo), `C` = PLUS (Cima), `E` = OK (`<-`, Esquerda), `D` = SEL (`->`, Direita).
+  - A **key token** is a letter: `B` = MINUS (Baixo), `C` = PLUS (Cima), `E` = LEFT (`<-`, Esquerda), `D` = RIGHT (`->`, Direita).
     Uppercase presses the key, lowercase releases it. Key tokens take effect on the next reply, and
     several key tokens in a row (no number between them) change in the same reply, which is how a
     chord (for example PLUS and MINUS) is written.
@@ -504,7 +504,7 @@ The Prog menu keeps the pages of section 7b, and three entries are added after t
 | 4 | `[REPLAY MACRO]` | `PLUS = GO`, or the reason it is unavailable |
 | 5 and up | IP and MAC pages of section 7b | |
 
-- **Keys in the menu:** `SEL` next, `OK` previous (wrapping), `PLUS` picks the entry. `MINUS` is
+- **Keys in the menu:** `RIGHT` next, `LEFT` previous (wrapping), `PLUS` picks the entry. `MINUS` is
   ignored. The held-key hand-back of section 7b keeps the `PLUS` that picked an entry from reaching
   the central.
 - **Reasons shown on line 2** (first match wins): `BUSY` (a test run is active,
@@ -729,7 +729,7 @@ Implementation notes (phase 1, built, not yet run on hardware):
 Acceptance (on the bench, real central and real selector):
 - At boot the selector shows the Prog menu. The first central frame replaces it immediately.
   After 3 s without central frames the menu returns on its first page.
-- `SEL` and `OK` (the arrow keys) navigate the pages with wrap-around. Disabled interfaces have no pages. A down
+- `RIGHT` and `LEFT` (the arrow keys) navigate the pages with wrap-around. Disabled interfaces have no pages. A down
   interface shows `0.0.0.0` and its MAC.
 - A key held while the central takes the screen back does not reach the central until released.
 - Screens and key presses behave exactly as with the central wired directly to the selector.

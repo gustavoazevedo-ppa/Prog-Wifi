@@ -86,7 +86,7 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 | D5: reply to the central with no selector connected | Keep replying (with idle keys). The central proceeds to its menu and a central can be tested without a selector |
 | M5: splash text pattern | It has no stable pattern across models and firmware, so it is not parsed. Revert detection uses the first valid selector-dialect frame from the central. Product identification comes from the Stinger (`produto` in `POST /iniciar`) |
 | C3: central with no selector present | The central keeps sending its initial screen (model and firmware version, a `'S'` frame) until a reply from the selector arrives. It then waits a short delay and shows the first page of its menu. It does not fall back to polls |
-| S1: OK / SEL key mapping | Data1 bit 7 = `OK`, bit 4 = `SEL`, as in the header struct (the Word document had them swapped). Some selectors label them `<-` (OK) and `->` (SEL). The menu navigates with them |
+| S1: OK / SEL key mapping | Data1 bit 7 = `OK`, bit 4 = `SEL`, as in the header struct (the Word document had them swapped). Some selectors label them `<-` (OK) and `->` (SEL). The firmware now calls them `LEFT` (bit 7) and `RIGHT` (bit 4). The menu navigates with them |
 | Ethernet MAC on the menu | Same derivation as the Ethernet manager (`ethernet_get_mac()`) |
 | UART map | UART1 selector (GPIO25 / 26), UART2 central (GPIO17 / 16), hardware wired |
 | Stop byte | Accept `0x81` and `0x51`. Toward the real selector send `0x81` (it accepts both, confirmed). Toward the central, echo the tail of the frame being answered, per frame (implemented in the panel port); master mode will use the tail of the central's own frames |

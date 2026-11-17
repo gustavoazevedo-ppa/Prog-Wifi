@@ -30,13 +30,14 @@
 
 // Canonical key bits (1 = pressed). The wire is active-low.
 //  - MINUS / PLUS: Data0 bit 7 / bit 4, the "-" and "+" keys.
-//  - OK / SEL: Data1 bit 7 / bit 4. On some selectors the same two keys are labelled with
-//    arrows: OK = "<-" (left arrow), SEL = "->" (right arrow). Confirmed on a real selector.
+//  - LEFT / RIGHT: Data1 bit 7 / bit 4, the "<-" (left arrow) and "->" (right arrow) keys. Older
+//    documents and some selector labels call them OK (LEFT) and SEL (RIGHT). Confirmed on a real
+//    selector.
 // See docs/selector-protocol.md section 4.
 #define SELECTOR_KEY_MINUS 0x01
 #define SELECTOR_KEY_PLUS 0x02
-#define SELECTOR_KEY_OK 0x04 //Also named Left Arrow
-#define SELECTOR_KEY_SEL 0x08 //Also named Right Arrow
+#define SELECTOR_KEY_LEFT 0x04  // "<-", formerly OK
+#define SELECTOR_KEY_RIGHT 0x08 // "->", formerly SEL
 
 typedef enum
 {
