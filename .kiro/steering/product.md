@@ -25,6 +25,7 @@ Firmware for the **Modulo WiFi Infinity S** ("Prog"), an ESP32 network module. P
 - `docs/analyze_selector_capture.py` and `docs/digital.csv`: Saleae capture of the selector link (host, replies, key contacts) and the script that decodes it (frames, timing, key behavior).
 - `docs/open-questions.md`: every open question about the selector bridge and master mode (bench checks, central firmware team items, decisions), plus the resolved ones.
 - `docs/connect-protocol.md`: master-mode protocol toward the central (read / save config, encrypted variant), extracted from sources kept in another repo. Not implemented yet.
+- `docs/jiga-protocol.md`, `docs/jiga-state-machine.md`: UART protocol of the maintenance test jig (XMC1100 firmware in `docs/TesteProgManutencao/`, a separate nested repo), family detection and per-family test state machines, in Portuguese. Base for a Python rewrite; not used by this firmware.
 - `docs/MA00476 - MODULO WIFI INFINITY S V1.3.pdf`, `docs/Novo Prog.pdf`: hardware manual and requirements.
 
 ## Language
