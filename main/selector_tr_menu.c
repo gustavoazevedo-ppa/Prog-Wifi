@@ -210,7 +210,11 @@ static const char *entry_reason(int page)
 {
     if (page == PAGE_ENTER)
     {
-        return menu_busy() ? "BUSY" : NULL;
+        if (menu_busy())
+        {
+            return "BUSY";
+        }
+        return s_menu.central_present ? NULL : "NO CENTRAL";
     }
     if (menu_busy() || s_menu.store_pending)
     {
@@ -623,6 +627,10 @@ static void menu_pick(uint32_t now_ms)
     {
     case PAGE_ENTER:
         // The claim is atomic with the start of a run: it fails while a run is active
+        if (entry_reason(PAGE_ENTER) != NULL)
+        {
+            break; // no central (or busy): the page shows why
+        }
         if (s_menu.claim_held || preset_server_selector_claim())
         {
             s_menu.claim_held = true;
