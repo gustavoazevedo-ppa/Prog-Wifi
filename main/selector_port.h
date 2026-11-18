@@ -31,7 +31,7 @@ typedef enum
 
 typedef enum
 {
-    SELECTOR_EVT_MSG = 0, // a message: dir and msg are valid; from the panel port also replied, keys and counted
+    SELECTOR_EVT_MSG = 0, // a message: dir and msg are valid; from the panel port also replied and keys
     SELECTOR_EVT_LINK,    // link change: side and up are valid
     SELECTOR_EVT_MODE,    // central mode change (planned, master mode): up = central is slave
     SELECTOR_EVT_DROP     // panel port dropped a corrupt frame (only while drop events are on): side and reason are valid
@@ -47,7 +47,6 @@ typedef struct
     bool replied;  // SELECTOR_EVT_MSG from the panel port: the Prog replied to this frame. The bridge calls on_reply
                    // and then on_msg from this one event, so the reply and its message are never separated
     uint8_t keys;  // replied: key mask the reply carried (what the central saw)
-    bool counted;  // replied: the reply counts as a poll (always true: every reply carries key state)
     selector_msg_t msg;
     selector_drop_reason_t reason; // SELECTOR_EVT_DROP
 } selector_evt_t;

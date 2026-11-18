@@ -22,7 +22,7 @@ off by default and has no HTTP switch yet (see D4).
 | S3 | Partly answered: the reply arrives about 60 ms after the screen frame is queued and about 30 ms after a poll (log resolution 10 ms), so the selector adds roughly 10 to 20 ms to the time on the wire. Still open: the exact latency (reply timeout is 80 ms, so the margin is about 20 ms) and whether the selector has a no-host timeout (blank screen, reset). | The defaults: reply timeout 80 ms, link timeout 500 ms. | Measure with the Saleae. Stop the host and watch the selector. |
 | S4 | Does a short `'S'` frame clear the rest of the screen, or leave the old text? The decoder assumes it overwrites only the first characters. | Handling of short `S` frames sent by a central. | Send a short frame after a full one and look. |
 | S6 | Is the backlight command `'L'` implemented? It appears only in the Word document. | Any translator that dims the backlight. | Send `'L'` and look. |
-| S7 | Beep `'B'`: units of the on / off values (1 ms per the document) and whether the reply carries key state. | Translators that generate beeps. | Send a beep and measure. |
+| S7 | Beep `'B'`: units of the on / off values (1 ms per the document). The reply carries key state like every reply (F3, resolved). | Translators that generate beeps. | Send a beep and measure. |
 | S8 | Does the selector's package bond out the pins used for UART (P0.6 / P0.7)? | Probably moot, the hardware works. | Confirm with the board schematic. |
 | S9 | Reference only: is the alarm's tick really 1 ms, and how does its `UART_Transmit()` behave? | Nothing now. | Alarm source. |
 
@@ -33,7 +33,6 @@ off by default and has no HTTP switch yet (see D4).
 | C1 | Which functions does each central send (`'?'`, `'B'`, `'L'`, short or full `'S'`), and what is its reply deadline? | Reply timing of the panel port, decode of unusual frames. | Tap on the UART2 side, per central model. |
 | C4 | Does a central that sends the `0x51` tail work through the bridge now that the panel port echoes the tail? Built, not yet tested on a real `0x51` central. | The tail echo (a capture of the central and of the Prog's reply would also show what the real selector answers when it is addressed with `0x51`). | Connect a `0x51` central, check the Saleae capture of UART2 and the menu. |
 | C5 | Is the 10 ms reply delay (`CENTRAL_REPLY_DELAY_MS`) right? It is longer than the real selector (3 to 4 ms) and was chosen for centrals that need a gap; the central's reply deadline is not measured. | Reply timing toward every central (too long may make a central time out, too short may be ignored). | Try it on each central family; measure the deadline with the Saleae (C1). |
-| C2 | Does the central tolerate replies built from cached keys, about 100 ms old, instead of live key state? | The whole decoupled design. | Operate the menus of a real central through the bridge. |
 
 ## C. Master mode (central firmware team, or a capture)
 
@@ -64,9 +63,7 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 
 ## F. Macros (design in `selector-bridge-design.md` section 7c)
 
-| ID | Question | Blocks | How |
-|---|---|---|---|
-| F9 | `POST /iniciar` is refused with 409 while the Prog is in transparent mode, for every run and not only for macros. Is that acceptable for normal preset runs? | The acceptance rule in `preset_server`. | Decided for now, confirm with the Stinger team. |
+Nothing open. The answered questions are under Resolved, and a known issue is noted in the design (section 7c, Replay).
 
 ---
 
@@ -106,5 +103,7 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 | F3: do the replies to `'B'` and `'L'` carry key state? | Yes (project owner): every reply carries the pressed keys in its payload, so every reply the panel port sends counts as a poll for macros, whatever the function. Macros recorded before that change were counted the old way and must be recorded again |
 | F5: press and release length each central needs | Varies per central. Not a concern for recorded macros, because the macro holds the values seen on the central it was recorded on. Only hand-edited macros need care |
 | F6: does the central finish its last operation during the trailing wait? | Yes (project owner) |
-| F7: which dropped-frame reasons fail a replay? | Bad size, bad stop byte, bad checksum, bad length and a frame cut off by the partial timeout fail it (`selector_drop_is_corruption()`). A frame for another id and an unknown function (jig / BLE) do not. Drop events are sent only while a replay runs; a drop whose event the bridge queue did not accept stays pending and is sent again. Still to confirm on a real central tap |
+| F7: which dropped-frame reasons fail a replay? | Bad size, bad stop byte, bad checksum, bad length and a frame cut off by the partial timeout fail it (`selector_drop_is_corruption()`). A frame for another id and an unknown function (jig / BLE) do not. Drop events are sent only while a replay runs; a drop whose event the bridge queue did not accept stays pending and is sent again. Bench-tested OK. Known issue noted in `selector-bridge-design.md` 7c: a decode drop reported at the end of a panel pass can be hidden behind a success |
 | Version marker in the macro format | Decided: none. A change in what the syntax means (as the F3 poll count did) is handled by recording the macros again. Unknown tokens are still rejected, so new token types stay safe for old firmware |
+| C2: does the central tolerate replies built from cached keys instead of live key state? | Yes: the central menus were operated through the bridge on the bench |
+| F9: `POST /iniciar` refused with 409 while the Prog is in transparent mode, for every run | Decided by the project owner and bench-tested: every run is refused with 409 while the menu is transparent or replaying a macro from the menu |

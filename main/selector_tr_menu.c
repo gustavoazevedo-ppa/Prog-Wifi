@@ -131,14 +131,9 @@ static selector_macro_iter_t s_iter;
 static atomic_bool s_run_req;
 static volatile bool s_started_pub;
 
-// Mirror of "state != MENU", written only through menu_set_state() in the bridge task and read by
-// the HTTP task (POST /iniciar is refused while it is true). A single byte, so no lock is needed.
-static volatile bool s_transparent;
-
 static void menu_set_state(menu_state_t st)
 {
     s_menu.state = st;
-    s_transparent = (st != MENU_STATE_MENU);
 }
 
 // The claim stays held while the menu is transparent and while a recorded macro waits to be stored,
@@ -153,11 +148,6 @@ static void claim_service(void)
             s_menu.claim_held = false; // /iniciar is accepted again
         }
     }
-}
-
-bool selector_tr_menu_transparent(void)
-{
-    return s_transparent;
 }
 
 // ─── Output helpers ─────────────────────────────────────────────────────────
@@ -790,19 +780,19 @@ static void menu_on_msg(void *ctx, selector_dir_t dir, const selector_msg_t *msg
     }
 }
 
-// A reply went to the central. While recording, counted replies feed the encoder with the key mask
+// A reply went to the central. While recording, every reply feeds the encoder with the key mask
 // that was actually sent (the key that picked the entry is masked by handback_mask, so it is not
 // recorded). While replaying, reply k sets the key mask of reply k+1; when the script has no more
 // replies, the replay succeeded.
-static void menu_on_reply(void *ctx, uint8_t keys, bool counted)
+static void menu_on_reply(void *ctx, uint8_t keys)
 {
     (void)ctx;
-    if (s_menu.recording && counted && !selector_macro_enc_reply(&s_enc, keys))
+    if (s_menu.recording && !selector_macro_enc_reply(&s_enc, keys))
     {
         ESP_LOGW(TAG, "Recording buffer full: recording ends");
         enter_menu(selector_bridge_now_ms());
     }
-    else if (s_menu.state == MENU_STATE_REPLAY && counted && !s_menu.replay_done)
+    else if (s_menu.state == MENU_STATE_REPLAY && !s_menu.replay_done)
     {
         uint8_t mask;
         if (keys != s_menu.replay_mask)

@@ -26,10 +26,10 @@ typedef struct
     // Every SELECTOR_BRIDGE_TICK_MS
     void (*on_tick)(void *ctx, uint32_t now_ms);
     // The panel port replied to the central. keys is the key mask the reply carried (what the central
-    // saw), counted is always true (every reply carries the key state). Not called while
+    // saw). Every reply counts as a poll, because every reply carries the key state. Not called while
     // the reply gate is closed. Called immediately before on_msg for the message of the frame that was
     // answered, from the same event.
-    void (*on_reply)(void *ctx, uint8_t keys, bool counted);
+    void (*on_reply)(void *ctx, uint8_t keys);
     // true: the panel port starts with its reply gate closed (the translator keeps the central
     // silent from the first frame). false (default): open, as before.
     bool gate_closed_at_start;

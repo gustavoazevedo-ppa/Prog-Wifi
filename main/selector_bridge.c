@@ -127,7 +127,7 @@ static void bridge_dispatch(const selector_evt_t *evt)
         // translator that ends on the reply sees the message right after, with nothing in between
         if (evt->replied && s_tr->on_reply != NULL)
         {
-            s_tr->on_reply(s_tr->ctx, evt->keys, evt->counted);
+            s_tr->on_reply(s_tr->ctx, evt->keys);
         }
         if (s_tr->on_msg != NULL)
         {

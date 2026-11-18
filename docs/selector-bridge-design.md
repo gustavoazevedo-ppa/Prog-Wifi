@@ -63,7 +63,7 @@ Non-goals (for now)
 | 21 | The menu shows all interfaces enabled in the firmware, even when down (IP `0.0.0.0`, real MAC), after a project / version page. During master mode the selector shows `PROGRAMMING...`. |
 | 22 | The host port polls keys about every 40 ms and sends screens only on change plus a 1 s refresh. The selector has no no-host timeout, and measured data shows a 100 ms poll reports only 65% of quick presses. |
 | 23 | The key state given to the central is not latched: a tap shorter than the central's own poll is lost, as with a direct connection. Revisit after the real-central test (`docs/open-questions.md`, D6). |
-| 24 | Macros (designed, not implemented): the Prog records the user's key presses on the central and replays them to set parameters. A macro is press / release events with timing counted in central polls, stored as raw ASCII text that starts with `#` (section 7c). |
+| 24 | Macros (implemented, bench-tested): the Prog records the user's key presses on the central and replays them to set parameters. A macro is press / release events with timing counted in central polls, stored as raw ASCII text that starts with `#` (section 7c). |
 | 25 | The Prog menu no longer hands the screen to the central by itself. While the menu shows, the panel port does not reply to the central (reply gate), so the central stays on its start screen. The menu entries `[ENTER CENTRAL]`, `[RECORD MACRO]` and `[REPLAY MACRO]` open the gate. |
 | 26 | Transparent mode ends after 3 s without a central frame or 3 s without a key press (two defines). Every exit to the menu runs the reset procedure: no replies until the central shows its start screen again, 5 s limit. |
 | 27 | The macro uses the 2 KB preset scratchpad. The Stinger delivers it through the same `/iniciar` hook (a file that starts with `#`), it is validated when downloaded, and it is replayed at once. Saving to disk is the existing download button on the web page. The Prog does not check the macro against the central model: the Stinger sends the right file. |
@@ -451,12 +451,13 @@ re-emitted when a value or the page changes. The selector port repeats the lates
 own cadence. Reading the network state must never block the bridge task.
 
 
-## 7c. Macros (designed, not implemented)
+## 7c. Macros (implemented)
 
 A macro is a recording of the keys a user pressed on the selector while talking to the central,
 replayed later to set parameters on the same kind of central. It replaces the "save preset"
-master-mode path for centrals that do not support it. Nothing in this section is built yet. The
-points that need a real central are in `docs/open-questions.md`, section F.
+master-mode path for centrals that do not support it. Everything in this section is implemented and
+was bench-tested on a real central and selector. The answered questions are in
+`docs/open-questions.md` (Resolved).
 
 Scope for now: press / release events with timing counted in polls. Wait-for-screen steps, a
 checksum, and a check of the macro against the central model are not part of it (decisions 27 and
@@ -507,8 +508,8 @@ The Prog menu keeps the pages of section 7b, and three entries are added after t
 - **Keys in the menu:** `RIGHT` next, `LEFT` previous (wrapping), `PLUS` picks the entry. `MINUS` is
   ignored. The held-key hand-back of section 7b keeps the `PLUS` that picked an entry from reaching
   the central.
-- **Reasons shown on line 2** (first match wins): `BUSY` (a test run is active,
-  `preset_server_run_active()`), `NO MACRO` (the scratchpad does not hold a valid macro, replay only),
+- **Reasons shown on line 2** (first match wins): `BUSY` (a test run is active, a replay is running,
+  or a recorded macro is still being stored; `[ENTER CENTRAL]` shows only this one), `NO MACRO` (the scratchpad does not hold a valid macro, replay only),
   `NO CENTRAL` (no pop-up stored), `WAIT CENTRAL` (the reset procedure is still running).
 - **Reply gate:** the panel port does not reply to the central while the menu shows. The central keeps
   sending its start screen, which the translator reads. The gate opens when an entry is picked or a
@@ -564,7 +565,7 @@ Transitions:
 
 - **Start:** `[RECORD MACRO]` clears the scratchpad, writes the header line from the stored pop-up,
   opens the gate and enters `CENTRAL` with the recording flag.
-- **What is recorded:** the key mask the panel port actually sent in each counted reply, which is what
+- **What is recorded:** the key mask the panel port actually sent in each reply, which is what
   the central saw. A tap that fell between two central polls was never seen by the central and is not
   in the macro.
 - **Encoding:** run-length over the replies. When the mask changes, the translator writes the number of
@@ -584,7 +585,7 @@ Transitions:
 - **Start:** from `[REPLAY MACRO]` (a valid macro in the scratchpad, "ready") or from a macro file
   downloaded through `POST /iniciar`, in both cases with no check against the central model.
 - **Mechanism:** the translator sets the first key mask in the panel port's cache, opens the gate, and
-  on every counted reply steps the script and sets the mask for the next reply. A reply that carried a
+  on every reply steps the script and sets the mask for the next reply. A reply that carried a
   mask other than the expected one (a key update lost in a full queue) fails the replay with
   `macro: protocol error`. The reply and the message of the frame it answered travel in one bridge
   event and are handled back to back. The central's
@@ -599,6 +600,12 @@ Transitions:
   frame is counted by the panel task's timeout poll even when no further byte follows. A drop whose
   event the bridge queue did not take stays pending and is sent again, and a drop found while a frame
   is recovered is queued before that frame's events.
+- **Known issue (observation, not fixed):** a decode drop (for example a bad length) is reported only at
+  the end of the panel task's pass, after the events of later frames handled in the same pass. If one of
+  those later frames is the last reply of the script, the replay reports success and the late drop is
+  ignored, so a corrupt frame can be hidden behind a success. It needs two frames in one pass with the
+  first one corrupt, right at the end of a script, and was not seen on the bench. The fix is to report
+  the drop inside the frame loop of the panel task, or from the decode-failure path.
 - **Success:** the whole script is sent without a failure. It is judged when the last number has been
   consumed: the gate closes at once (no further reply goes out), the central's message that came with
   that last reply is forwarded to the real selector, and the replay ends, before the reset procedure.
@@ -606,8 +613,10 @@ Transitions:
   other than the silence rule.
 - **After the run:** the translator returns to `MENU` and the reset procedure starts. The selector
   shows `MACRO OK` or `MACRO FAIL` as page 0 for `MACRO_RESULT_SHOW_MS` (5000) or until a key press,
-  then the usual page 0. If the reset times out afterwards, the run result does not change. The second
-  line is REPLAY DONE, CENTRAL SILENT or PROTOCOL ERROR.
+  then the usual page 0. The second line is `REPLAY DONE`, `CENTRAL SILENT` or `PROTOCOL ERROR`. The
+  key press that ends it does nothing else. If the reset times out afterwards, the run result does not
+  change. No result page is shown when a run fails before the replay starts (`macro: central not ready`,
+  `macro: selector unavailable`).
 - **Status:** a run started by `/iniciar` is a normal run. `GET /status` shows `status: 1` while the
   macro replays, then `2` on success or `3` with the reason in `message` on failure. The shape of
   `/status` does not change. Messages: `macro: central not ready`, `macro: central went silent`,
@@ -633,18 +642,18 @@ Transitions:
   The check happens when the request is accepted, so it also applies to a normal preset run.
 - **NVS:** nothing is stored in NVS, so no schema version bump.
 
-### Modules and defines (planned)
+### Modules and defines
 
 | Piece | Change |
 |---|---|
 | `selector_macro.c/.h` (new, pure C, no ESP-IDF) | validate, run-length encoder, script iterator |
 | `selector_port` | reply gate; the key mask sent rides on the message event of the frame answered (every reply counts, see F3) |
 | `selector_bridge` | route the reply to the translator (`on_reply`, then `on_msg` from the same event) |
-| `selector_tr_menu` | states, menu entries, pop-up store and reset procedure, recording and replay (split into its own translator if it grows) |
+| `selector_tr_menu` | states, menu entries, pop-up store and reset procedure, recording and replay |
 | `preset_server` | macro fork in the fetch, accessors for the scratchpad, replay hand-off in place of the simulated run, the 409 check |
 | `main/index.html` | raw-text download |
 
-Defines: `CENTRAL_SILENCE_MS` (3000, exists), `CENTRAL_KEY_IDLE_MS` (3000), `POPUP_RESET_WAIT_MS`
+Defines (in `selector_tr_menu.c`): `CENTRAL_SILENCE_MS` (3000), `CENTRAL_KEY_IDLE_MS` (3000), `POPUP_RESET_WAIT_MS`
 (5000), `MACRO_RESULT_SHOW_MS` (5000).
 
 ## 8. Bridge and tasks
@@ -653,18 +662,20 @@ Files: `selector_bridge.c/.h`.
 
 | Task | Role | Priority | Stack |
 |---|---|---|---|
-| panel port | UART2 RX, framer, immediate reply | 5 | 3072 |
-| selector port | UART1 cadence, RX, framer | 5 | 3072 |
-| bridge | translator logic, ticks | 4 | 3072 |
+| panel port | UART2 RX, framer, immediate reply | 5 | 4096 |
+| selector port | UART1 cadence, RX, framer | 5 | 4096 |
+| bridge | translator logic, ticks | 4 | 4096 |
 
-Queues (copy by value, depth 8):
-- `bridge_in`: messages and link events from both ports to the bridge task.
-- `panel_in`: upstream `KEYS` from the bridge to the panel port.
-- `selector_in`: downstream `SCREEN` / `BEEP` / `BACKLIGHT` from the bridge to the selector port.
+Queues (copy by value):
+- `bridge_in` (depth 16): messages, link events and drop events from both ports to the bridge task.
+- `panel_in` (depth 8): upstream `KEYS` from the bridge to the panel port.
+- `selector_in` (depth 8): downstream `SCREEN` / `BEEP` / `BACKLIGHT` from the bridge to the selector port.
 
 The bridge task waits on `bridge_in` with a 10 ms timeout and calls `on_tick` on timeout. All
-translator logic runs in that one task, so it needs no locks. The ports keep their own
-caches, so there is no shared state between tasks. If an outbound queue is full the message is
+translator logic runs in that one task. The ports keep their own caches. The only state shared
+between tasks is single-byte flags (the reply gate and the drop-event switch, written by the bridge task
+and read by the panel port), and the calls into `preset_server` (claim, scratchpad, run result) take its
+locks with a 5 ms timeout and retry on later ticks, so the bridge task never blocks. If an outbound queue is full the message is
 dropped and counted, and the ports never block on the bridge.
 
 ### Statistics and tap

@@ -334,7 +334,6 @@ static void panel_handle_frame(selector_port_t *p, const selector_frame_t *frame
         // travels in the same event as the message, so the bridge handles both as one step.
         evt.replied = true;
         evt.keys = reply_keys;
-        evt.counted = true;
     }
     evt.type = SELECTOR_EVT_MSG;
     evt.side = SELECTOR_SIDE_CENTRAL;

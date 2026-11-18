@@ -12,10 +12,6 @@
 
 const selector_translator_t *selector_tr_menu(void);
 
-// True while the menu is not showing (the central's screens and keys pass through, including
-// while a macro is being recorded). Written by the bridge task only, safe to read from any task.
-// POST /iniciar is refused while it is true.
-bool selector_tr_menu_transparent(void);
 
 // Asks the menu to replay the macro in the scratchpad for a running POST /iniciar run. Never
 // blocks. False when the bridge has not started. The result comes back through
