@@ -55,7 +55,7 @@ Base URL: `http://{IP_DO_PROG}`
 - `cliente` and `estado` are optional. A missing or empty one skips that lookup step.
 - `caminho` is normalized: a trailing `/` is added if missing. It is required.
 - Surrounding whitespace in string fields is trimmed.
-- Hex content: whitespace and line breaks are stripped, upper and lower case both accepted. A `0x` prefix is not expected.
+- Hex content: whitespace, line breaks and `*` characters are stripped, upper and lower case both accepted. A `0x` prefix is not expected.
 - Inline comments (preset and macro files): `//` and everything after it up to the end of the line is ignored, anywhere in the file, including a comment line before the macro `#` header. Comments are removed right after the download, so they count toward the download limit (`PRESET_MAX_HEX_CHARS`, 6144 bytes) but not toward the 2048-byte macro limit, and the stored text and its CRC do not include them. A single `/` is not a comment and is rejected as an invalid character.
 - Only an HTTP 404 on a preset URL moves on to the next location. Any other failure (timeout, 5xx, TLS) is also tried on the next location, and the last error is reported if all fail.
 

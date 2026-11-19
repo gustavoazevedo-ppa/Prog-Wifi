@@ -644,7 +644,7 @@ static int fetch_preset(const char *url, fetch_ctx_t *ctx, esp_err_t *err_out)
     return code;
 }
 
-/* Strip BOM/whitespace in place, validate hex, decode into bin. Returns byte count or -1. */
+/* Strip BOM, whitespace and '*' in place, validate hex, decode into bin. Returns byte count or -1. */
 static int hex_decode(char *text, size_t len, uint8_t *bin, size_t bin_cap, char *clean_out)
 {
     size_t n = 0;
@@ -655,9 +655,9 @@ static int hex_decode(char *text, size_t len, uint8_t *bin, size_t bin_cap, char
     }
     for (; i < len; i++)
     {
-        if (isspace((unsigned char)text[i]))
+        if (isspace((unsigned char)text[i]) || text[i] == '*')
         {
-            continue;
+            continue; /* blanks and '*' separators are dropped */
         }
         if (!isxdigit((unsigned char)text[i]))
         {
@@ -708,6 +708,79 @@ static void preset_commit_locked(size_t len, uint32_t seq, const char *id, const
     s_preset_info.bytes = (uint16_t)len;
     s_preset_info.crc32 = crc32_calc(s_preset_bin, len);
     s_preset_info.loaded_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
+}
+typedef enum
+{
+    PRESET_LOAD_OK = 0,
+    PRESET_LOAD_BAD_MACRO,
+    PRESET_LOAD_BAD_HEX
+} preset_load_t;
+/* Turns the text of a preset or macro file into the scratchpad content. Shared by the /iniciar
+ * download and any other source of file text. Removes inline comments (in place), tells a macro
+ * from a hex preset, validates and commits. Nothing is written on failure, so the previous
+ * scratchpad content stays. Takes s_data_lock itself.
+ *   text, len : the file as received (modified in place)
+ *   clean     : room for PRESET_MAX_HEX_CHARS + 1 chars; receives the text for the log line
+ *   out_*     : result details, valid when the return value is PRESET_LOAD_OK
+ *   mres_out  : validator result for PRESET_LOAD_BAD_MACRO (may be NULL) */
+static preset_load_t preset_load_text(char *text, size_t len, char *clean, uint32_t seq, const char *id,
+                                      const char *source, preset_level_t lvl, bool *is_macro_out,
+                                      int *nbytes_out, uint32_t *crc_out, selector_macro_result_t *mres_out)
+{
+    /* Inline comments ("//" to the end of the line) are removed before detection, so the stored
+     * text, its CRC and the log line only hold the payload. */
+    len = selector_macro_strip_comments(text, len);
+    const uint8_t *mstart = macro_start(text, len);
+    if (mstart != NULL)
+    {
+        /* Macro file: stored as raw text from the '#' on. Validated before any write, so a
+         * failure leaves the previous buffer untouched. */
+        size_t mlen = len - (size_t)(mstart - (const uint8_t *)text);
+        /* The whole file is validated (the validator skips the BOM and blanks and enforces the
+         * 2048-byte limit); only the slice from the '#' is stored. */
+        selector_macro_result_t mres = selector_macro_validate((const uint8_t *)text, len);
+        if (mres == SELECTOR_MACRO_OK)
+        {
+            mres = selector_macro_validate(mstart, mlen);
+        }
+        if (mres != SELECTOR_MACRO_OK)
+        {
+            if (mres_out != NULL)
+            {
+                *mres_out = mres;
+            }
+            return PRESET_LOAD_BAD_MACRO;
+        }
+        xSemaphoreTake(s_data_lock, portMAX_DELAY);
+        memcpy(s_preset_bin, mstart, mlen);
+        preset_commit_locked(mlen, seq, id, source, lvl);
+        *crc_out = s_preset_info.crc32;
+        xSemaphoreGive(s_data_lock);
+        /* Log text: line breaks as '|', other control characters as blanks */
+        for (size_t k = 0; k < mlen && k < PRESET_MAX_HEX_CHARS; k++)
+        {
+            clean[k] = (mstart[k] == '\n') ? '|' : (mstart[k] < 0x20 ? ' ' : (char)mstart[k]);
+        }
+        clean[mlen] = '\0';
+        *is_macro_out = true;
+        *nbytes_out = (int)mlen;
+        return PRESET_LOAD_OK;
+    }
+    xSemaphoreTake(s_data_lock, portMAX_DELAY);
+    int nbytes = hex_decode(text, len, s_preset_bin, PRESET_BIN_MAX, clean);
+    if (nbytes >= 0)
+    {
+        preset_commit_locked((size_t)nbytes, seq, id, source, lvl);
+        *crc_out = s_preset_info.crc32;
+    }
+    xSemaphoreGive(s_data_lock);
+    if (nbytes < 0)
+    {
+        return PRESET_LOAD_BAD_HEX;
+    }
+    *is_macro_out = false;
+    *nbytes_out = nbytes;
+    return PRESET_LOAD_OK;
 }
 
 /* ─── Macro scratchpad accessors (bridge task: short lock timeout, never portMAX_DELAY) ─── */
@@ -1149,83 +1222,37 @@ static void run_job(job_t *job)
     /* --- Decode hex straight into the static buffer. hex_decode() validates everything
      *     before it writes a byte, so a failure leaves the previous preset untouched. --- */
     job->level = lvls[found_idx];
-    int nbytes;
+    int nbytes = 0;
     bool is_macro = false;
-    /* Inline comments ("//" to the end of the line) are removed before detection, so the stored
-     * text, its CRC and the log line only hold the payload. */
-    ctx.len = selector_macro_strip_comments(ctx.buf, ctx.len);
-    const uint8_t *mstart = macro_start(ctx.buf, ctx.len);
-    if (mstart != NULL)
+    uint32_t crc = 0;
+    selector_macro_result_t mres = SELECTOR_MACRO_OK;
+    char idtxt[24];
+    format_id(&st, idtxt, sizeof(idtxt));
+    preset_load_t lr = preset_load_text(ctx.buf, ctx.len, clean, job->seq, idtxt, urls[found_idx], job->level,
+                                        &is_macro, &nbytes, &crc, &mres);
+    if (lr != PRESET_LOAD_OK)
     {
-        /* Macro file: stored as raw text from the '#' on. Validated before any write, so a
-         * failure leaves the previous buffer untouched. */
-        size_t mlen = ctx.len - (size_t)(mstart - (const uint8_t *)ctx.buf);
-        /* The whole downloaded file is validated (the validator skips the BOM and blanks and
-         * enforces the 2048-byte limit); only the slice from the '#' is stored. */
-        selector_macro_result_t mres = selector_macro_validate((const uint8_t *)ctx.buf, ctx.len);
-        if (mres == SELECTOR_MACRO_OK)
+        free(ctx.buf);
+        free(clean);
+        st.msg_count = 0;
+        st.status = ST_ERROR;
+        if (lr == PRESET_LOAD_BAD_MACRO)
         {
-            mres = selector_macro_validate(mstart, mlen);
-        }
-        if (mres != SELECTOR_MACRO_OK)
-        {
-            free(ctx.buf);
-            free(clean);
-            st.msg_count = 0;
-            st.status = ST_ERROR;
             add_msg(&st, "preset file is not a valid macro");
-            state_commit(&st);
             ESP_LOGW(TAG, "run %.0f failed: invalid macro (validator result %d)", st.id_num, (int)mres);
-            job_finish(job, "500 Internal Server Error", &st);
-            return;
         }
-        is_macro = true;
-        nbytes = (int)mlen;
-        char idtxt[24];
-        format_id(&st, idtxt, sizeof(idtxt));
-        xSemaphoreTake(s_data_lock, portMAX_DELAY);
-        memcpy(s_preset_bin, mstart, mlen);
-        preset_commit_locked(mlen, job->seq, idtxt, urls[found_idx], job->level);
-        job->bytes = (uint16_t)mlen;
-        job->crc = s_preset_info.crc32;
-        job->has_crc = true;
-        xSemaphoreGive(s_data_lock);
-        /* Log text: line breaks as '|', other control characters as blanks */
-        for (size_t k = 0; k < mlen && k < PRESET_MAX_HEX_CHARS; k++)
+        else
         {
-            clean[k] = (mstart[k] == '\n') ? '|' : (mstart[k] < 0x20 ? ' ' : (char)mstart[k]);
-        }
-        clean[mlen] = '\0';
-    }
-    else
-    {
-        char idtxt[24];
-        format_id(&st, idtxt, sizeof(idtxt));
-        xSemaphoreTake(s_data_lock, portMAX_DELAY);
-        nbytes = hex_decode(ctx.buf, ctx.len, s_preset_bin, PRESET_BIN_MAX, clean);
-        if (nbytes >= 0)
-        {
-            preset_commit_locked((size_t)nbytes, job->seq, idtxt, urls[found_idx], job->level);
-            job->bytes = (uint16_t)nbytes;
-            job->crc = s_preset_info.crc32;
-            job->has_crc = true;
-        }
-        xSemaphoreGive(s_data_lock);
-        if (nbytes < 0)
-        {
-            free(ctx.buf);
-            free(clean);
-            st.msg_count = 0;
-            st.status = ST_ERROR;
             add_msg(&st, "preset file is not valid hex");
-            state_commit(&st);
             ESP_LOGW(TAG, "run %.0f failed: invalid hex content", st.id_num);
-            job_finish(job, "500 Internal Server Error", &st);
-            return;
         }
+        state_commit(&st);
+        job_finish(job, "500 Internal Server Error", &st);
+        return;
     }
-
-    /* --- "Action": log only (UART protocol will come later) --- */
+    job->bytes = (uint16_t)nbytes;
+    job->crc = crc;
+    job->has_crc = true;    /* --- "Action": log only (UART protocol will come later) --- */
     if (is_macro)
     {
         ESP_LOGI(TAG, "preset (macro, %d bytes): %s", nbytes, clean);
