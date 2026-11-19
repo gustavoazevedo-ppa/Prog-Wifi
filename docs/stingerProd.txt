@@ -1,0 +1,112 @@
+		/*
+		 * ===== defaultPktConnect ('F' = 0x46) - envio das configs MAXIMAS =====
+		 * Guia para quem implementa o ENVIO (transmissor). Detalhes completos e
+		 * exemplo em hex: docs/connect_envio_configs.md
+		 *
+		 * Cada pacote carrega UMA config (struct confUnion, maxParam = 32 bytes).
+		 * Uma sequencia envia ate 10 configs (uma por modelo, model 0..9).
+		 *
+		 * Frame recebido (defaultPktSizeCon = 6 + 2 + maxParam = 40 = 0x28 bytes):
+		 *   idx  campo        tamanho  valor / descricao
+		 *   0    header       1        0x7E (ou 0x5A = flagCripto); eco na resposta
+		 *   1    length       1        0x28 (40). Diferente disso -> pacote rejeitado
+		 *   2    id           1        id do transmissor (resposta usa connectID = 2)
+		 *   3    service      1        'F' (0x46)
+		 *   4    total        1        qtde de pacotes da sequencia (defaultPktTotalOff)
+		 *   5    num          1        nº deste pacote, 1..total (defaultPktNumOff)
+		 *   6-37 config       32       confUnion.confVector.param[0..31] (defaultPktConfOff)
+		 *   38   checksum     1        XOR dos bytes 0..37, depois XOR 0xFF (calcCheckSum)
+		 *   39   stop         1        0x81 (stopSCI)
+		 *
+		 * Campos da config (confUnion.confStruct, 32 bytes). Uma linha por campo, na ordem
+		 * de envio (offset = posicao na lista, 0..31), formato 'campo: tamanho - explicacao':
+		 *   model: 1 byte - indice do slot (0..9)
+		 *   language: 1 byte - idioma
+		 *   setup: 1 byte - setup do motor (+0x10 modo hibrido, flag de direcao)
+		 *   txType: 1 byte - tipo de transmissor
+		 *   pausa: 1 byte - tempo de pausa
+		 *   rampaFC: 1 byte - rampa no fim de curso
+		 *   torqueFC: 1 byte - torque no fim de curso
+		 *   rampaAB: 1 byte - rampa de abertura
+		 *   torqueAB: 1 byte - torque de abertura
+		 *   freio: 1 byte - freio
+		 *   forca: 1 byte - forca
+		 *   luz: 1 byte - luz
+		 *   forcaMem: 1 byte - forca na memorizacao (percurso desconhecido)
+		 *   backLash: 1 byte - backlash
+		 *   pushConf: 1 byte - configuracao do push
+		 *   rev: 1 byte - reversao
+		 *   retardo: 1 byte - retardo
+		 *   travaFC: 1 byte - trava no fim de curso
+		 *   blockConf: 1 byte - configuracao de bloqueio
+		 *   partidaConf: 1 byte - configuracao da partida
+		 *   botoeiraAbreConf: 1 byte - configuracao da botoeira de abertura
+		 *   pushPulsos: 1 byte - pulsos do push
+		 *   fotSeguidora: 1 byte - fotocelula seguidora (0 = desligada, 1..8 = indice em fotSeg[])
+		 *   sem uso (offsets 23..31): 9 bytes - enviar 0x00
+		 * Sempre enviar os 32 bytes.
+		 *   model (byte 0 da config = idx 6 do frame) e o INDICE do slot:
+		 *   o pacote e copiado para confFlash.confMax[model]. Valido: 0..9;
+		 *   model > 9 -> pacote rejeitado (nada e copiado).
+		 *
+		 * Resposta (serialTX, length = 7):
+		 *   [0]=header(eco) [1]=0x07 [2]=0x02 [3]='F' [4]=status [5]=checksum [6]=0x81
+		 *   status (dataOff) = 1 -> OK;  0 -> erro.
+		 *
+		 * Regras para o transmissor:
+		 *  - enviar um pacote por vez e esperar o ACK (status=1) antes do proximo;
+		 *  - enviar os pacotes em ordem num = 1, 2, ..., total, com o mesmo total;
+		 *  - o receptor so verifica length e model<=9. NAO valida a ordem, total
+		 *    ou num: o transmissor deve garantir a sequencia correta;
+		 *  - pacote intermediario (num != total): copia na RAM e responde 1;
+		 *  - ultimo pacote (num == total): copia na RAM e grava confFlash.confMax
+		 *    inteiro (10 x 32 bytes) em INFOS_MAX_BLOCK. status=1 so se a gravacao
+		 *    der E_EEPROM_XMC1_OPERATION_STATUS_SUCCESS; senao 0;
+		 *  - erro (status=0): o pacote foi descartado. Reenvie o pacote; se a
+		 *    sequencia ficar incerta, recomece do pacote 1;
+		 *  - models nao enviados mantem o valor que ja estava na RAM/flash;
+		 *  - sem gravacao parcial: a flash so e escrita no ultimo pacote. Se a
+		 *    sequencia for interrompida, a RAM fica alterada (ate o reset) mas
+		 *    a flash nao.
+		 */
+		 
+
+
+	/*
+		 * ===== maxPktConnect ('X' = 0x58) - envio das configs PADRAO =====
+		 * Guia para quem implementa o ENVIO (transmissor). Detalhes completos e
+		 * exemplo em hex: docs/connect_envio_configs.md
+		 *
+		 * Mesmo formato de frame, campos da config, resposta e regras do
+		 * defaultPktConnect ('F'); veja o comentario acima. Diferencas:
+		 *   - service = 'X' (0x58);
+		 *   - destino: confFlash.confInfos[model], gravado em INFOS_PADRAO_BLOCK
+		 *     no ultimo pacote (num == total);
+		 *   - NAO ha teste model > 9: o transmissor DEVE enviar model entre 0 e 9,
+		 *     senao a copia escreve fora do vetor confInfos[10] (corrompe a RAM).
+		 *
+		 * Frame (40 bytes = 0x28):
+		 *   idx  campo        tamanho  valor / descricao
+		 *   0    header       1        0x7E (ou 0x5A); eco na resposta
+		 *   1    length       1        0x28. Diferente disso -> status 0
+		 *   2    id           1        id do transmissor
+		 *   3    service      1        'X' (0x58)
+		 *   4    total        1        qtde de pacotes (defaultPktTotalOff)
+		 *   5    num          1        nº do pacote, 1..total (defaultPktNumOff)
+		 *   6-37 config       32       confUnion (byte 6 = model = indice do slot)
+		 *   38   checksum     1        XOR bytes 0..37, depois XOR 0xFF
+		 *   39   stop         1        0x81
+		 *
+		 * Resposta (length = 7): 7E 07 02 'X' status chk 81  (status 1 = OK, 0 = erro).
+		 *
+		 * Gravacao em flash (INFOS_PADRAO_BLOCK): ocorre somente quando num == total
+		 * e grava confInfos inteiro (10 x 32 = infosBlockSize = 320 bytes); os slots
+		 * nao enviados nesta sequencia sao regravados com o valor que ja estava na
+		 * RAM. ATENCAO: confInfos e confMax sao a MESMA memoria (union
+		 * confUnionInfos), entao 'F' e 'X' escrevem nos mesmos 320 bytes de RAM e
+		 * cada um grava esse conteudo no seu bloco. Nao intercale as duas
+		 * sequencias: termine uma (ate o ultimo pacote) antes de iniciar a outra.
+		 *
+		 * Erro: status 0 = pacote descartado (so ocorre por length errado ou falha
+		 * de gravacao no ultimo pacote). Reenvie; se incerto, recomece do pacote 1.
+		 */
