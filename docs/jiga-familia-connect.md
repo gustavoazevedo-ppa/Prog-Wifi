@@ -1,96 +1,86 @@
 # Jiga: família Connect (Triflex Connect)
 
-Origem: `docs/TesteProgManutencao/`. Documento de estudo para o port da função da jiga para dentro do projeto prog_wifi (firmware ESP32, em C) e para achar pontos de melhoria no teste. Frames em `docs/jiga-protocol.md`, estados em `docs/jiga-state-machine.md`. Os dois documentos continuam valendo, e este repete o que for preciso para ser lido sozinho.
+Origem: `docs/TesteProgManutencao/`. Lista dos comandos que a jiga envia ao produto e do resultado esperado, para o port da função da jiga para o prog_wifi. Formato dos frames em `docs/jiga-protocol.md`.
 
-Legenda: **[código]** executado pelo código ativo. **[comentário]** vem de comentário do código. **[inferido]** dedução minha, precisa de confirmação.
+Legenda: **[código]** vem do código ativo. **[comentário]** vem de comentário do código. **[inferido]** dedução, precisa de confirmação.
 
 ## Resumo
 
-O Connect usa o mesmo fluxo de teste da Triflex (estados 125 a 132, 3 ciclos de ida e volta controlados por posição do encoder). O que muda é o **conjunto de comandos do motor**, que depende de como o Connect foi detectado: 20 pelo banner, 10 pelo probe. O código não diz qual dos dois realmente move o motor. [código] + [comentário]
+O Connect usa o mesmo teste da Full Range (3 ciclos de ida e volta, controlados pela posição do encoder). O que muda é o **conjunto de comandos do motor**, que depende de como o produto foi identificado: conjunto 20 pelo nome, conjunto 10 pela consulta. O código não diz qual dos dois realmente move o motor. [código] + [comentário]
 
-## Unidade de espera
+## Identificação
 
-`U` = 1 decremento de `TempoMaquina`. Ele cai uma vez a cada 200 chamadas de `UserIRQHandler` (2 x 10 x 10, constantes de `equates.h`), e o laço principal chama essa rotina 13 vezes por volta. Logo 1U ≈ 15,4 voltas do laço principal, sem contar as chamadas extras da ISR do TIMER_0 (1 a cada 50 ms). O tempo real de uma volta não foi estimado. [código] + [inferido]
+- Pelo nome: o produto anuncia um nome que contém `"CONNECT"`, por exemplo `TRIFLEX CONNECT v2.34` (chega cortado no fim). Esse teste vem depois de `"Facility"`. Resultado: conjunto 20. [código] + [comentário]
+- Pela consulta: o Connect responde ao pedido com ID `'C'` usando ID `'C'`, dentro de 300U. Resultado: conjunto 10. [código]
+- A consulta com ID `'L'` só acontece se a resposta ao `'C'` não chegar. Se o `'L'` também não responder e o produto já tinha respondido ao `'C'`, a jiga volta para `'C'` com o conjunto 10. [código]
+- O comentário diz que o Facility também responde à consulta `'C'`. Nesse caso a jiga o trata como Full Range ou Connect, com conjunto 10. Pela consulta, Connect e Full Range também não se distinguem. [comentário] + [código]
+- As versões `3.15`, `2.34`, `2.36` e `2.45` mudam só o texto do LCD (`TRIFLEX CONNECT TESTE CL`), não o teste. [código]
+- Firmware antigo sem nome: se a resposta chega sem nome e com ID `'C'`, a jiga assume Connect. [código]
+- Depois de identificar, a jiga espera 30U e, no caminho pelo nome, mais 2 s reais, com uma tela temporária "RECONHECIDO" de 4 s. [código]
 
-| Espera | Voltas do laço (aprox.) |
+## Frame
+
+Pedido: `7E 08 43 ('C') 54 ('T') <CMD> 20 <CKS> 51`. [código]
+
+Bits de `CMD`, pelo significado dos comentários do código **[inferido]**:
+
+| Bit | Valor | Significado |
+|---|---|---|
+| frente | 0x04 | liga o motor para frente |
+| sentido oposto | 0x08 | liga o motor no sentido oposto |
+| alta velocidade | 0x10 | seletor de velocidade, não é comando de giro |
+
+`U` é a unidade de espera da jiga. O tempo real de 1U não foi medido (cerca de 15 voltas do laço principal). [código] + [inferido]
+
+## Comandos de um ciclo, conjunto 20 (identificado pelo nome)
+
+| # | Comando | Frame | Quando envia | Espera depois |
+|---|---|---|---|---|
+| 1 | Frente (0x04) | `7E 08 43 ('C') 54 ('T') 04 20 BA 51` | Primeiro ciclo: depois da espera da identificação. Ciclos seguintes: logo | 254U |
+| 2 | Frente + sentido oposto (0x0C) | `7E 08 43 ('C') 54 ('T') 0C 20 B2 51` | Espera concluída e encoder na janela de partida | 254U |
+| 3 | Para (0x00) | `7E 08 43 ('C') 54 ('T') 00 20 BE 51` | Espera concluída e encoder na janela de parada da ida | 254U |
+| 4 | Alta velocidade (0x10) | `7E 08 43 ('C') 54 ('T') 10 20 AE 51` | Espera concluída | 254U |
+| 5 | Alta velocidade + sentido oposto (0x18) | `7E 08 43 ('C') 54 ('T') 18 20 A6 51` | Espera concluída e encoder na janela da volta | 254U |
+| 6 | Para (0x00), conta 1 ciclo | `7E 08 43 ('C') 54 ('T') 00 20 BE 51` | Espera concluída e encoder na janela do fim | 254U |
+| 7 | Para (0x00) | `7E 08 43 ('C') 54 ('T') 00 20 BE 51` | Espera concluída | 254U, se tiver menos de 3 ciclos. Volta ao comando 1 |
+
+## Comandos de um ciclo, conjunto 10 (identificado pela consulta)
+
+Igual ao conjunto 10 da Full Range (`docs/jiga-familia-full-range.md`): 0x04, 0x14, 0x00, 0x08, 0x18, 0x08 (conta 1 ciclo), 0x00.
+
+O comentário em `TESTERot.c` diz que o conjunto 10 não funciona para o Connect: ele responde à consulta e **para de responder** assim que a alta velocidade (0x10) é ligada. O conjunto 20 é o outro aceito por um produto neste projeto. O resultado em bancada do 20 não está registrado. [comentário]
+
+## Janelas do encoder
+
+A posição é `PlsEncoder` de 16 bits, como na Full Range. O lado A conta de cerca de 0 para cima e o lado B de 65535 para baixo. [código]
+
+| Fase | Lado A | Lado B |
+|---|---|---|
+| Partida | 50 a 150 | 65450 a 65500 |
+| Parada da ida | 700 a 900 | 64650 a 64800 |
+| Volta | 500 a 600 | 64900 a 65000 |
+| Fim | 10 a 100 | 65400 a 65550 |
+
+## Resultado
+
+- Aprovado (3 ciclos): ` Central Triflex ` / `  Aprovada !!!!` com beep. A jiga fica parada. [código]
+- Reprovado: `ERRO ENCODER` / `MOTOR SEM PULSO` com beep, se o motor está comandado (frente ou sentido oposto) e o encoder não muda por 5 s reais. [código]
+- Durante o teste, a linha 2 do LCD mostra `ENC:eeeee C:ccc`. [código]
+
+## Falhas
+
+| Sintoma | Significado |
 |---|---|
-| 30U | 462 |
-| 254U | 3.908 |
-| 300U (janela de probe) | 4.615 |
+| `ERRO ENCODER` | Motor comandado e encoder sem mudar por 5 s reais. [código] |
+| O Connect para de responder logo que o motor liga | É o sintoma descrito no comentário para o conjunto 10. Com o conjunto 20, seria um dado novo. [comentário] + [inferido] |
+| Motor não gira, sem erro | Conjunto de comandos errado para o produto, ou o encoder não chega às janelas e o teste fica parado sem mensagem. [inferido] |
+| Aprovado depois de 1 ciclo | A contagem de ciclos vinha de uma execução anterior. [código] + [inferido] |
 
-## 1. Identificação
+Ao reportar, informar como o produto foi identificado (nome ou consulta), o texto do LCD e a linha `ENC:... C:...`. [inferido]
 
-| Critério | Detalhe | Proc. |
-|---|---|---|
-| Banner (caminho principal) | O nome contém `"CONNECT"`, por exemplo `TRIFLEX CONNECT v2.34` (o nome chega cortado no fim). Testado depois de `"Facility"`. Resultado: letra `'C'`, conjunto `POLARIDADE_CONNECT` = 20 em `TESTERot.c` | [código] + [comentário] |
-| Probe (fallback) | O Connect responde ao pedido `'C'` com ID `'C'` (`StartMaquina = 5`, `RespondeuIDC = 1`). O estado 201 testa `StartMaquina == 5` primeiro e fecha ali, com letra `'C'` e conjunto **10**, sem chegar ao probe `'L'`. Janela de 300U (≈ 4.615 voltas) | [código] |
-| Probe `'L'` | Só ocorre se a resposta ao `'C'` não chegar na janela. Se o `'L'` também não responder e `RespondeuIDC` estiver ligado, o estado 205 volta para `'C'` com conjunto 10 | [código] |
-| Distinção do Facility | O comentário diz que o Facility também responde ao probe `'C'` e que o `'L'` separaria os dois. Pelo código do estado 201, um Facility que responda `'C'` seria fechado como Full Range ou Connect antes do `'L'`. Pelo probe, Connect e Full Range também não se distinguem (ambos viram conjunto 10) | [comentário] vs [código] |
-| Variantes pelo nome | `"3.15"`, `"2.34"`, `"2.36"` e `"2.45"` geram `ModeloCod` 23 a 26. Só mudam a tela do LCD (`TRIFLEX CONNECT TESTE CL`), não o teste | [código] |
-| Firmware antigo sem banner | Se o buffer enche sem nome e há ID `'C'`, a jiga assume Connect pelo código 23 ou 24 | [código] |
+## Pontos de melhoria e dúvidas
 
-Depois de identificar, a jiga espera 30U (≈ 462 voltas) e, no caminho por banner, mais 2 s reais antes de ligar o motor. No caminho por banner há uma tela temporária "RECONHECIDO" que bloqueia o laço por 4 s. [código]
-
-## 2. Acionar
-
-Pedido: `7E 08 43 54 <CmdJiga> 20 <CKS> 51`. Bits de `CmdJiga`: `CMD_FWR` 0x04, `CMD_REV` 0x08, `CMD_HIGHsp` 0x10. [código]
-
-### Conjunto 20 (identificado pelo banner)
-
-| Estado | CmdJiga depois da ação | Frame enviado | Espera depois |
-|---|---|---|---|
-| 125 | `CMD_FWR` = 0x04 | `7E 08 43 54 04 20 BA 51` | 254U |
-| 126 | `CMD_FWR` + `CMD_REV` = 0x0C | `7E 08 43 54 0C 20 B2 51` | 254U |
-| 127 | 0x00 (zera `CMD_FWR` e `CMD_REV`) | `7E 08 43 54 00 20 BE 51` | 254U |
-| 128 | `CMD_HIGHsp` = 0x10 | `7E 08 43 54 10 20 AE 51` | 254U |
-| 129 | `CMD_HIGHsp` + `CMD_REV` = 0x18 | `7E 08 43 54 18 20 A6 51` | 254U |
-| 130 | 0x00 (zera `CMD_HIGHsp` e `CMD_REV`), `SomaCiclos++` | `7E 08 43 54 00 20 BE 51` | 254U |
-| 131 | 0x00 | `7E 08 43 54 00 20 BE 51` | 254U (se < 3 ciclos) |
-
-### Conjunto 10 (identificado pelo probe)
-
-Igual ao conjunto 10 do Full Range (`docs/jiga-familia-full-range.md`, seção 2): 0x04, 0x14, 0x00, 0x08, 0x18, 0x08 (com `SomaCiclos++`), 0x00.
-
-O comentário em `TESTERot.c` diz que o conjunto 10 não funciona para o Connect: ele responde ao probe e **para de responder** assim que `CMD_HIGHsp` vai a 1 (o byte [4] deixa de ser 0). O conjunto 20 é o outro aceito por um produto neste projeto. O resultado em bancada do 20 não está registrado. [comentário]
-
-## 3. Parar
-
-Por posição, nas mesmas janelas da Triflex (`PlsEncoder` de 16 bits). O código dos estados 126 a 130 é compartilhado com Full Range e Facility. [código]
-
-| Estado | Janela lado A | Janela lado B |
-|---|---|---|
-| 126 partida | 50 a 150 | 65450 a 65500 |
-| 127 parada (ida) | 700 a 900 | 64650 a 64800 |
-| 129 volta | 500 a 600 | 64900 a 65000 |
-| 130 fim | 10 a 100 | 65400 a 65550 |
-
-Ciclos: 3 (`SomaCiclos >= 3` no estado 131), sem reinício da contagem. [código]
-
-## 4. Voltar
-
-No conjunto 20 a volta é o estado 128 (`CMD_HIGHsp`), seguido do 129 (`CMD_REV` com `CMD_HIGHsp`) e do 130 (para perto de 10 a 100). No conjunto 10 a volta usa `CMD_REV` no 128. [código]
-
-## 5. Fim do teste
-
-Aprovado: ` Central Triflex ` / `  Aprovada !!!!` (`Frases_LCD[86]`) e beep no estado 131. O estado 132 deixa a jiga ociosa. [código]
-
-## 6. O que o operador vê
-
-Linha 2 do LCD: `ENC:eeeee C:ccc` (encoder e ciclos). [código]
-
-## 7. Anomalias
-
-| Sintoma | O que significa | Proc. |
-|---|---|---|
-| `ERRO ENCODER` / `MOTOR SEM PULSO` | Motor comandado (`CMD_FWR` ou `CMD_REV`) e encoder sem mudar por 5 s reais, nos estados 125 a 130 | [código] |
-| Connect para de responder logo que o motor liga | É o sintoma descrito no comentário para o conjunto 10 (`CMD_HIGHsp` em 1). Se aparecer com o conjunto 20, é um dado novo | [comentário] + [inferido] |
-| Motor não gira, sem erro | Conjunto de comandos errado para o produto, ou o encoder não chega às janelas e o teste fica parado sem mensagem | [inferido] |
-| Aprovado depois de 1 ciclo | `SomaCiclos` com valor de execução anterior | [código] + [inferido] |
-| Reportar | Como foi detectado (banner ou probe), o texto do LCD, a linha `ENC:... C:...` e o estado em que parou | [inferido] |
-
-## 8. Pontos de melhoria e dúvidas
-
-1. O mesmo produto recebe comandos diferentes conforme o caminho de detecção. Convém decidir qual conjunto vale e eliminar a divergência (20 pelo banner, 10 pelo probe). [código]
-2. `POLARIDADE_CONNECT` está definido duas vezes, com valores diferentes (20 em `TESTERot.c`, 10 em `ModoManutencao.c`). Só o de `TESTERot.c` é usado. [código]
-3. Valem aqui os pontos do Full Range: tela temporária de 4 s, falta de limite de tempo por passo, janelas estreitas, `SomaCiclos` e `LadoMotorA`/`LadoMotorB` nunca zerados. Ver `docs/jiga-familia-full-range.md`, seção 8.
-4. Se o Connect só responde enquanto `CMD_HIGHsp` é 0, os estados 126 e 129 com o conjunto 10 derrubam a comunicação. O conjunto 20 deveria ser confirmado em bancada. [comentário] + [inferido]
+1. O mesmo produto recebe comandos diferentes conforme a identificação (20 pelo nome, 10 pela consulta). Convém decidir qual conjunto vale e eliminar a divergência. [código]
+2. O valor do conjunto do Connect está definido duas vezes, com valores diferentes (20 em `TESTERot.c`, 10 em `ModoManutencao.c`). Só o de `TESTERot.c` é usado. [código]
+3. Valem aqui os pontos da Full Range: tela temporária de 4 s, falta de limite de tempo por comando, janelas estreitas, contagem de ciclos e lados nunca zerados. Ver `docs/jiga-familia-full-range.md`. 
+4. Se o Connect só responde enquanto a alta velocidade está desligada, os comandos 2 e 5 do conjunto 10 derrubam a comunicação. O conjunto 20 deveria ser confirmado em bancada. [comentário] + [inferido]

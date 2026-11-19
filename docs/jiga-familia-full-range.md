@@ -1,100 +1,88 @@
 # Jiga: família Full Range
 
-Origem: `docs/TesteProgManutencao/`. Documento de estudo para o port da função da jiga para dentro do projeto prog_wifi (firmware ESP32, em C) e para achar pontos de melhoria no teste. Frames em `docs/jiga-protocol.md`, estados em `docs/jiga-state-machine.md`. Os dois documentos continuam valendo, e este repete o que for preciso para ser lido sozinho.
+Origem: `docs/TesteProgManutencao/`. Lista dos comandos que a jiga envia ao produto e do resultado esperado, para o port da função da jiga para o prog_wifi. Formato dos frames em `docs/jiga-protocol.md`.
 
-Legenda: **[código]** executado pelo código ativo. **[comentário]** vem de comentário do código. **[inferido]** dedução minha, precisa de confirmação.
+Legenda: **[código]** vem do código ativo. **[comentário]** vem de comentário do código. **[inferido]** dedução, precisa de confirmação.
 
 ## Resumo
 
-Triflex Full Range, conjunto de comandos 10. A jiga liga o motor para frente, para na posição lida no encoder, liga o motor no sentido oposto, para perto do ponto de partida, e repete até contar 3 ciclos. As mudanças de estado dependem da posição do encoder (16 bits) e de esperas. A única reprovação é `ERRO ENCODER`. [código]
+Triflex Full Range, conjunto de comandos 10. A jiga liga o motor para frente, para na posição lida no encoder, liga o sentido oposto, para perto do ponto de partida, e repete até completar 3 ciclos. Cada passo depende da posição do encoder (16 bits) ou de uma espera. A única reprovação é `ERRO ENCODER`. [código]
 
-## Unidade de espera
+## Identificação
 
-`U` = 1 decremento de `TempoMaquina`. Ele cai uma vez a cada 200 chamadas de `UserIRQHandler` (2 x 10 x 10, constantes de `equates.h`), e o laço principal chama essa rotina 13 vezes por volta. Logo 1U ≈ 15,4 voltas do laço principal, sem contar as chamadas extras da ISR do TIMER_0 (1 a cada 50 ms). O tempo real de uma volta não foi estimado: depende do LCD e de transmissões bloqueantes da UART. [código] + [inferido]
+- O produto anuncia um nome que contém `"FULL"`, por exemplo `TRIFLEX FULL RANGE V3.14`. A jiga escuta o nome por até 4 s. Esse teste vem depois dos nomes `"Facility"` e `"CONNECT"`. [código]
+- Sem nome reconhecido, a jiga pede com ID `'C'`. Resposta com ID `0` (Full Range) dentro de 300U identifica o produto. [código] + [comentário]
+- O Connect responde com ID `'C'` e cai no mesmo caminho, com o mesmo conjunto de comandos. O código ativo não os separa pelo probe. [código]
+- Depois de identificar, a jiga espera 30U e pelo menos 2 s reais antes de ligar o motor. No caminho pelo nome há ainda uma tela temporária "RECONHECIDO" de 4 s. [código]
 
-| Espera | Voltas do laço (aprox.) |
-|---|---|
-| 30U | 462 |
-| 254U | 3.908 |
-| 300U (janela de probe) | 4.615 |
+## Frame
 
-## 1. Identificação
+Pedido: `7E 08 43 ('C') 54 ('T') <CMD> 20 <CKS> 51`. [código]
 
-| Critério | Detalhe | Proc. |
+Bits de `CMD`, pelo significado dos comentários do código **[inferido]**:
+
+| Bit | Valor | Significado |
 |---|---|---|
-| Banner (caminho principal) | O nome contém `"FULL"`, por exemplo `TRIFLEX FULL RANGE V3.14`. É testado depois de `"Facility"` e `"CONNECT"`. Resultado: letra `'C'`, conjunto 10 | [código] + [comentário] |
-| Escuta do banner | Até 4 s reais (`ESCUTA_BANNER_US`). Termina antes se o nome chega (`ModeloRawIdx >= 6`) | [código] |
-| Probe (fallback) | A jiga pede com ID `'C'`. Resposta com ID `0` (`StartMaquina = 5`) fecha no estado 201 como Full Range, conjunto 10. Janela de 300U (≈ 4.615 voltas) | [código] |
-| Distinção do Connect | O Full Range responde ID `0`, o Connect responde ID `'C'` [comentário]. No estado 201 os dois caem no mesmo ramo (`StartMaquina == 5`) e recebem o mesmo conjunto 10. Pelo probe, o código ativo não os separa | [comentário] + [código] |
-| `ModeloCod` | Fica 0. Não há entrada na tabela, e o nome aparece cru no LCD | [código] |
+| frente | 0x04 | liga o motor para frente |
+| sentido oposto | 0x08 | liga o motor no sentido oposto |
+| alta velocidade | 0x10 | seletor de velocidade, não é comando de giro |
 
-Depois de identificar, a jiga espera 30U (≈ 462 voltas) e pelo menos 2 s reais desde a identificação antes de ligar o motor (`produtoPronto`, estado 125). No caminho por banner há ainda uma tela temporária "RECONHECIDO" que bloqueia o laço por 4 s (`delay_real_ms(4000)`), então a espera de 2 s já terminou quando o estado 125 roda. [código]
+Com todos os bits em 0, o frame é `7E 08 43 ('C') 54 ('T') 00 20 BE 51`.
 
-## 2. Acionar
+## Esperas
 
-Pedido: `7E 08 43 54 <CmdJiga> 20 <CKS> 51`. Bits de `CmdJiga`: `CMD_FWR` 0x04, `CMD_REV` 0x08, `CMD_HIGHsp` 0x10. [código]
+`U` é a unidade de espera da jiga. O tempo real de 1U não foi medido. Pelo cálculo do código, 1U equivale a cerca de 15 voltas do laço principal. [código] + [inferido]
 
-Durante a detecção e nos intervalos o `CmdJiga` vale 0: `7E 08 43 54 00 20 BE 51`.
+## Janelas do encoder
 
-| Estado | Entra quando | CmdJiga depois da ação | Frame enviado | Espera depois |
+A posição é `PlsEncoder` = byte `[5]` x 256 + byte `[6]` da resposta. O lado A conta a partir de cerca de 0 para cima. O lado B conta a partir de 65535 para baixo. Os limites são estritos (`>` e `<`). [código] + [inferido]
+
+| Fase | Lado A | Lado B |
+|---|---|---|
+| Partida | 50 a 150 | 65450 a 65500 |
+| Parada da ida | 700 a 900 | 64650 a 64800 |
+| Volta | 500 a 600 | 64900 a 65000 |
+| Fim | 10 a 100 | 65400 a 65550 |
+
+Na parada da ida e na volta, o lado precisa ter sido marcado antes. A distância de ida é de cerca de 700 a 900 contagens a partir da posição inicial. [código] + [inferido]
+
+## Comandos de um ciclo
+
+| # | Comando | Frame | Quando envia | Espera depois |
 |---|---|---|---|---|
-| 125 | Primeira vez: espera da detecção zerada e produto pronto. Nos ciclos seguintes `ApenasCicloM == 22` basta, sem espera | `CMD_FWR` = 0x04 | `7E 08 43 54 04 20 BA 51` | 254U |
-| 126 | Espera zerada e encoder na janela de partida (tabela abaixo) | `CMD_FWR` + `CMD_HIGHsp` = 0x14 | `7E 08 43 54 14 20 AA 51` | 254U |
-| 127 | Espera zerada e encoder na janela de parada | 0x00 (zera `CMD_FWR` e `CMD_HIGHsp`) | `7E 08 43 54 00 20 BE 51` | 254U |
-| 128 | Espera zerada | `CMD_REV` = 0x08 | `7E 08 43 54 08 20 B6 51` | 254U |
-| 129 | Espera zerada e encoder na janela de volta | `CMD_REV` + `CMD_HIGHsp` = 0x18 | `7E 08 43 54 18 20 A6 51` | 254U |
-| 130 | Espera zerada e encoder na janela de fim | `CMD_HIGHsp` e `CMD_FWR` a 0, `CMD_REV` continua: 0x08. `SomaCiclos++` | `7E 08 43 54 08 20 B6 51` | 254U |
-| 131 | Espera zerada | 0x00 | `7E 08 43 54 00 20 BE 51` | 254U (se < 3 ciclos) |
+| 1 | Frente (0x04) | `7E 08 43 ('C') 54 ('T') 04 20 BA 51` | Primeiro ciclo: depois da espera da identificação e com o produto pronto. Ciclos seguintes: logo | 254U |
+| 2 | Frente + alta velocidade (0x14) | `7E 08 43 ('C') 54 ('T') 14 20 AA 51` | Espera concluída e encoder na janela de partida | 254U |
+| 3 | Para (0x00) | `7E 08 43 ('C') 54 ('T') 00 20 BE 51` | Espera concluída e encoder na janela de parada da ida | 254U |
+| 4 | Sentido oposto (0x08) | `7E 08 43 ('C') 54 ('T') 08 20 B6 51` | Espera concluída | 254U |
+| 5 | Sentido oposto + alta velocidade (0x18) | `7E 08 43 ('C') 54 ('T') 18 20 A6 51` | Espera concluída e encoder na janela da volta | 254U |
+| 6 | Sentido oposto (0x08), conta 1 ciclo | `7E 08 43 ('C') 54 ('T') 08 20 B6 51` | Espera concluída e encoder na janela do fim | 254U |
+| 7 | Para (0x00) | `7E 08 43 ('C') 54 ('T') 00 20 BE 51` | Espera concluída | 254U, se tiver menos de 3 ciclos. Volta ao comando 1 |
 
-[código]. O significado de "alta velocidade" para `CMD_HIGHsp` vem do comentário do código ("seletor de velocidade, não comando de giro").
+Resultado esperado: o encoder passa pelas janelas na ordem dos comandos. Se o encoder não entrar na janela, a jiga espera sem limite de tempo e o motor continua comandado. [código]
 
-## 3. Parar
+## Resultado
 
-A parada na ida é por **posição**: o estado 127 só desliga o motor quando `PlsEncoder` entra na janela. Comparações estritas (`>` e `<`). Se o encoder nunca entra na janela, o estado espera para sempre e o motor continua comandado. [código]
-
-`PlsEncoder` = byte [5] x 256 + byte [6] da resposta. O lado A conta a partir de ~0 para cima. O lado B conta a partir de 65535 para baixo (virada do contador). [código] + [inferido]
-
-| Estado | Janela lado A | Janela lado B |
-|---|---|---|
-| 126 partida | 50 a 150 | 65450 a 65500 |
-| 127 parada (ida) | 700 a 900 | 64650 a 64800 |
-| 129 volta | 500 a 600 | 64900 a 65000 |
-| 130 fim | 10 a 100 | 65400 a 65550 |
-
-No 127 e no 129 o lado precisa ter sido marcado antes (`LadoMotorA` ou `LadoMotorB` = 0x33). A distância de ida é então de ~700 a ~900 contagens a partir da posição inicial. [código] + [inferido]
-
-**Ciclos:** a jiga conta 3 ciclos completos (`SomaCiclos >= 3` no estado 131). A contagem nunca é zerada, então uma segunda execução sem reiniciar a jiga aprova após o primeiro ciclo. [código]
-
-## 4. Voltar
-
-A volta é o estado 128: liga `CMD_REV` (sentido oposto) depois da espera de 254U. Nos estados 129 e 130 a jiga acelera (`CMD_HIGHsp`) e desliga perto do ponto de partida pela mesma regra de janelas. [código]
-
-## 5. Fim do teste
-
-- Aprovado: o estado 131 zera os bits de comando e mostra ` Central Triflex ` / `  Aprovada !!!!` (`Frases_LCD[86]`) com beep. O estado 132 deixa a jiga ociosa. O TX Triflex continua pedindo. [código]
+- Aprovado (3 ciclos contados): o LCD mostra ` Central Triflex ` / `  Aprovada !!!!` com beep. O TX Triflex continua pedindo e a jiga fica parada. [código]
+- Reprovado: `ERRO ENCODER` / `MOTOR SEM PULSO` com beep. Acontece quando o motor está comandado (frente ou sentido oposto) e o encoder não muda por 5 s reais. [código]
 - Nada reinicia a detecção depois do fim. Para testar outro produto, a jiga precisa ser reiniciada. [código] + [inferido]
+- Durante o teste, a linha 2 do LCD mostra `ENC:eeeee C:ccc` (encoder e ciclos contados). [código]
 
-## 6. O que o operador vê
+## Falhas
 
-Linha 2 do LCD durante o teste: `ENC:eeeee C:ccc`, ou seja, o `PlsEncoder` e o número de ciclos contados. [código]
+| Sintoma | Significado |
+|---|---|
+| `ERRO ENCODER` | Motor parado, encoder sem pulso, ou frames de resposta deixando de chegar (o valor só atualiza com frame válido). [código] + [inferido] |
+| Motor girando e teste parado | O encoder passou pela janela entre duas leituras, ou nunca entrou nela. Não há limite de tempo nem erro. [código] + [inferido] |
+| Nome no LCD e teste não começa | O motor não foi ligado: a espera da identificação, a indicação de produto pronto ou o conjunto de comandos ainda não tem valor. [código] + [inferido] |
+| Detecção repetindo | Nenhuma família respondeu ao nome nem às consultas. [código] |
+| Aprovado depois de 1 ciclo | A contagem de ciclos vinha de uma execução anterior. [código] + [inferido] |
 
-## 7. Anomalias
+## Pontos de melhoria e dúvidas
 
-| Sintoma | O que significa | Proc. |
-|---|---|---|
-| `ERRO ENCODER` / `MOTOR SEM PULSO` e beep | O motor foi comandado (`CMD_FWR` ou `CMD_REV`) e o `PlsEncoder` não mudou por 5 s reais, nos estados 125 a 130. Causas possíveis: motor parado, encoder sem pulso, frames de resposta deixando de chegar (o valor só atualiza com frame válido) | [código] + [inferido] |
-| Motor girando, encoder mudando, mas o teste não avança | O encoder passou pela janela entre duas leituras, ou nunca entrou nela. Não há limite de tempo nem erro nesse caso | [código] + [inferido] |
-| Nome do modelo parado no LCD e teste não começa | O estado 125 não ligou o motor: espera da detecção, `produtoPronto` ou conjunto de comandos ainda sem valor | [código] + [inferido] |
-| Detecção repetindo (nome do produto não aparece) | Nenhuma família respondeu ao banner nem aos probes | [código] |
-| Aprovado depois de 1 ciclo | `SomaCiclos` já vinha com valor de uma execução anterior | [código] + [inferido] |
-| Reportar | O texto do LCD, a linha `ENC:... C:...` e o estado em que parou (125 a 132) | [inferido] |
-
-## 8. Pontos de melhoria e dúvidas
-
-1. A tela temporária de 4 s ("MEDIÇÃO TEMPORÁRIA - REMOVER DEPOIS") bloqueia o laço e faz a espera real de 2 s do estado 125 não ter efeito no caminho por banner. [código] + [comentário]
-2. Falta um limite de tempo por passo (126 a 130). Hoje só o vigia do encoder, que não pega o caso de encoder em movimento fora das janelas. [código] + [inferido]
-3. As janelas são estreitas (50 a 200 contagens) e dependem da leitura cair dentro delas. [código]
-4. No estado 130 o conjunto 10 grava `LadoMotorA` no caminho do lado B (provável cópia e cola), e `LadoMotorA`/`LadoMotorB` nunca são zerados. Depois do primeiro ciclo, as janelas dos dois lados ficam válidas. [código] + [inferido]
-5. `SomaCiclos` e `ApenasCicloM` não são reiniciados entre execuções. [código]
-6. O estado 130 deixa `CMD_REV` ligado até o 131. [código]
+1. A tela temporária de 4 s ("MEDIÇÃO TEMPORÁRIA - REMOVER DEPOIS") bloqueia o laço e anula a espera real de 2 s no caminho pelo nome. [código] + [comentário]
+2. Falta um limite de tempo por comando. Hoje só o vigia do encoder, que não pega o caso de encoder em movimento fora das janelas. [código] + [inferido]
+3. As janelas são estreitas (50 a 200 contagens) e dependem de a leitura cair dentro delas. [código]
+4. O conjunto 10 grava o lado A também no caminho do lado B (provável cópia e cola), e os lados nunca são zerados. Depois do primeiro ciclo as janelas dos dois lados ficam válidas. [código] + [inferido]
+5. A contagem de ciclos não é reiniciada entre execuções. [código]
+6. No comando 6 o sentido oposto continua ligado até o comando 7. [código]
 7. Não se sabe a escala do encoder (contagens por volta) nem a velocidade com que ele passa pelas janelas. Esperas em tempo real, e não em voltas do laço, tornariam o teste previsível.
