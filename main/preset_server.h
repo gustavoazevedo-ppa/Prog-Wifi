@@ -34,6 +34,7 @@ bool preset_server_basic_auth_ok(httpd_req_t *req);
 #define PRESET_HISTORY_LEN 20  /* requests kept (RAM only, since boot) */
 #define PRESET_SOURCE_MAX 448  /* size of the preset source URL buffer */
 #define PRESET_BIN_MAX 2048    /* max decoded preset size (bytes) */
+#define PRESET_MAX_HEX_CHARS 6144 /* max preset / macro file size (download and upload): 2 KB binary = 4096 hex chars, plus slack */
 
 typedef enum
 {
@@ -111,6 +112,19 @@ bool preset_server_macro_copy(uint8_t *out, size_t cap, size_t *len);
 /* Validates, then stores a recorded macro (source "recorded"). False = invalid or lock timeout. */
 bool preset_server_macro_store(const uint8_t *data, size_t len);
 
+/* Stores the text of a preset or macro file (as received, up to the download limit of
+ * 6144 bytes) in the scratchpad, source "upload". Same rules as the /iniciar download: "//"
+ * comments are removed, a macro or a hex preset is told apart and validated, and nothing is
+ * written on failure. text is modified in place. For the admin API upload. */
+typedef enum
+{
+    PRESET_UPLOAD_OK = 0,
+    PRESET_UPLOAD_BUSY,      /* a test run is active, or the selector is in use */
+    PRESET_UPLOAD_BAD_MACRO,
+    PRESET_UPLOAD_BAD_HEX,
+    PRESET_UPLOAD_NO_MEM,
+} preset_upload_result_t;
+preset_upload_result_t preset_server_upload(char *text, size_t len, bool *is_macro, int *nbytes, uint32_t *crc);
 /* Result of a macro replay started by POST /iniciar (reported by the menu translator). */
 typedef enum
 {

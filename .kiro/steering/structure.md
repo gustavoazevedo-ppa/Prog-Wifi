@@ -27,7 +27,7 @@ build/                  Build output (generated)
 | `nvs_schema` | NVS schema version check, boot-loop protection, boot/panic counters |
 | `ota_button` | Physical button recovery / OTA, manifest check, decrypt of pre-encrypted images, NVS format |
 | `preset_server` | HTTP server: `POST /iniciar`, `GET /status`, preset download (hex preset or raw-text `#` macro file, both kept in the 2 KB scratchpad), run history |
-| `admin_api` | `/admin/*` endpoints, registered on the same httpd server |
+| `admin_api` | `/admin/*` endpoints, registered on the same httpd server (including `POST /admin/preset`, which uploads a preset or macro file) |
 | `http_log` | Request logging wrappers around `esp_http_server` |
 | `log_server` | Read-only TCP log console (port 2323), opened for a limited window on request |
 | `selector_wire`, `selector_keys`, `selector_macro` | Selector protocol framer / codec, key edge helper, and macro file validator / encoder / script iterator and the `//` inline comment stripper used on downloaded preset and macro files (pure C, no ESP-IDF dependency) |

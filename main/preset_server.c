@@ -51,7 +51,6 @@
 #define PRESET_SIM_RUN_MS 5000                     /* simulated run: status 1 -> 2 */
 #define PRESET_SIM_ACTION_TEXT "UART: send preset to DUT and start tests (simulated)"
 #define PRESET_UART_BAUD 9600                      /* used to emulate TX time */
-#define PRESET_MAX_HEX_CHARS 6144                  /* 2 KB binary = 4096 hex chars, plus slack */
 #define PRESET_FETCH_TIMEOUT_MS 5000
 #define PRESET_MAX_BODY 1024                       /* max POST body size */
 #define PRESET_URL_LEN 448
@@ -863,6 +862,44 @@ bool preset_server_macro_store(const uint8_t *data, size_t len)
     return true;
 }
 
+preset_upload_result_t preset_server_upload(char *text, size_t len, bool *is_macro, int *nbytes, uint32_t *crc)
+{
+    /* Same refusals as POST /iniciar: a run in progress or the selector held by the menu. The
+     * check and the commit are not one critical section (the load takes only the data lock), so
+     * a run that starts in between is not caught; the window is a few microseconds. */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool busy = s_selector_claimed || s_state.status == ST_RUNNING || admin_api_blocks_runs();
+    uint32_t seq = s_hist_next_seq - 1; /* seq of the newest request, as for a recorded macro */
+    xSemaphoreGive(s_lock);
+    if (busy)
+    {
+        return PRESET_UPLOAD_BUSY;
+    }
+    char *clean = malloc(PRESET_MAX_HEX_CHARS + 1);
+    if (clean == NULL)
+    {
+        return PRESET_UPLOAD_NO_MEM;
+    }
+    selector_macro_result_t mres = SELECTOR_MACRO_OK;
+    preset_load_t lr = preset_load_text(text, len, clean, seq, "", "upload", PRESET_LVL_NA, is_macro, nbytes,
+                                        crc, &mres);
+    if (lr == PRESET_LOAD_OK)
+    {
+        ESP_LOGI(TAG, "preset uploaded (%s, %d bytes): %s", *is_macro ? "macro" : "hex", *nbytes, clean);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "preset upload rejected: %s (validator result %d)",
+                 lr == PRESET_LOAD_BAD_MACRO ? "invalid macro" : "invalid hex", (int)mres);
+    }
+    free(clean);
+    switch (lr)
+    {
+    case PRESET_LOAD_OK: return PRESET_UPLOAD_OK;
+    case PRESET_LOAD_BAD_MACRO: return PRESET_UPLOAD_BAD_MACRO;
+    default: return PRESET_UPLOAD_BAD_HEX;
+    }
+}
 bool preset_server_run_active_try(bool *active)
 {
     if (s_lock == NULL || xSemaphoreTake(s_lock, pdMS_TO_TICKS(PRESET_MACRO_LOCK_MS)) != pdTRUE)
@@ -1776,7 +1813,7 @@ void preset_server_start(void)
                                  reports the lowest free stack seen, to keep an eye on it */
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 16; /* 7 here + 5 admin endpoints (admin_api.c) */
+    config.max_uri_handlers = 16; /* 7 here + 8 admin endpoints (admin_api.c) */
     config.recv_wait_timeout = 10;
 
     if (httpd_start(&s_server, &config) != ESP_OK)

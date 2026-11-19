@@ -246,6 +246,7 @@ Code: `main/admin_api.c` / `admin_api.h`, registered by `preset_server_start()` 
 | `POST /admin/reboot` | Reboot |
 | `GET /admin/history` | The last 20 `POST /iniciar` requests since boot, newest first, including rejected ones (JSON, see below) |
 | `GET /admin/preset` | The last preset that was downloaded and decoded successfully: metadata plus the hex (JSON). `?format=text` returns only the hex string |
+| `POST /admin/preset` | Upload a preset (hex) or macro file as the request body (up to 6144 bytes, `//` comments allowed). Same detection and validation as a file fetched by `POST /iniciar`; stored in the scratchpad with source `upload` (RAM only, lost on reboot) and not replayed. Needs `X-Admin`. Replies: `200` with `{"ok":true,"message":"Stored N bytes (macro)","type":"macro","bytes":N,"crc32":"..."}`, `400` (empty, invalid hex or invalid macro, previous content kept), `409` (test run active, or selector in use), `413` (over 6144 bytes) |
 | `POST /console` | Open the log console port (unchanged, see above). Does not need `X-Admin` |
 
 **Replies to the `POST`s** are JSON: `{"ok":true|false,"message":"..."}`.
@@ -314,6 +315,7 @@ The history records the **request and the download**: what was asked, which pres
 - `hex` is continuous uppercase hex, the same form as `exemplo.conf`, so it can be diffed against the server file.
 - Before the first successful download since boot: `{"available":false,"now_s":N}` (with `?format=text`: `404`).
 - A run whose hex fails to decode does **not** replace the stored preset: it keeps the last valid one. The `seq` field tells which run loaded it, so a newer failed request can be told apart from the content shown.
+- The **Upload .conf** button of the web page (next to Reload viewer, so it works before any preset exists) sends a file to `POST /admin/preset` and reload the viewer.
 - The web page shows history and preset as two independent sections, each with its own refresh button. A history row whose CRC equals the viewer's gets an "in viewer" tag. Neither is loaded automatically, so opening the page does not trigger the password prompt.
 
 **Rules between tests and maintenance**

@@ -100,7 +100,7 @@
     </div>
     <pre id="viewer-dump" tabindex="0"></pre>
   </div>
-  <div class="toolbar"><button type="button" id="btn-viewer">Reload viewer</button></div>
+  <div class="toolbar"><button type="button" id="btn-viewer">Reload viewer</button> <button type="button" id="btn-upload">Upload .conf</button><input type="file" id="file-upload" hidden></div>
 </div>
 
 <!-- 4. Admin -->
@@ -634,7 +634,53 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   });
 
-  document.getElementById("btn-console").addEventListener("click", function () {
+  // Upload .conf: sends the chosen file (hex preset or macro, "//" comments allowed) to the device,
+  // which validates it exactly like a downloaded one and keeps it in the scratchpad (RAM only).
+  var UPLOAD_MAX = 6144;
+  // Feedback goes next to the Download button; when no preset is loaded that toolbar is hidden, so also use the viewer message
+  function uploadNote(text) {
+    viewerNote(text);
+    if (document.getElementById("viewer-detail").hidden) {
+      var m = document.getElementById("viewer-msg");
+      m.hidden = false;
+      m.textContent = text;
+    }
+  }
+  document.getElementById("btn-upload").addEventListener("click", function () {
+    var inp = document.getElementById("file-upload");
+    inp.value = "";
+    inp.click();
+  });
+  document.getElementById("file-upload").addEventListener("change", function (ev) {
+    var file = ev.target.files && ev.target.files[0];
+    if (!file) { return; }
+    if (file.size === 0) { uploadNote("Upload failed: the file is empty"); return; }
+    if (file.size > UPLOAD_MAX) { uploadNote("Upload failed: the file is larger than " + UPLOAD_MAX + " bytes"); return; }
+    uploadNote("Uploading...");
+    file.arrayBuffer().then(function (buf) {
+      return fetch("/admin/preset", {
+        method: "POST",
+        headers: { "X-Admin": "1", "Content-Type": "text/plain" },
+        body: buf,
+        cache: "no-store"
+      });
+    }).then(function (res) {
+      return res.text().then(function (t) {
+        var j = null;
+        try { j = JSON.parse(t); } catch (e) { j = null; }
+        if (res.ok) {
+          uploadNote("Uploaded: " + (j && j.message ? j.message : "stored"));
+          loadViewer();
+        } else if (res.status === 401) {
+          uploadNote("Upload failed: authentication required (wrong or missing credentials)");
+        } else {
+          uploadNote("Upload failed: " + (j && j.message ? j.message : "HTTP " + res.status));
+        }
+      });
+    }).catch(function (err) {
+      uploadNote("Upload failed: " + err.message);
+    });
+  });  document.getElementById("btn-console").addEventListener("click", function () {
     setBusy(true);
     // POST /console answers with plain text (port + time window).
     adminPost("/console").then(function (r) {

@@ -599,6 +599,75 @@ static esp_err_t preset_handler(httpd_req_t *req)
     return err;
 }
 
+/* POST /admin/preset   body: the text of a preset (hex) or macro file, up to PRESET_MAX_HEX_CHARS.
+ * Same rules as the file fetched by POST /iniciar ("//" comments, hex or macro, validated), stored
+ * in the scratchpad with source "upload". Refused (409) during a test run or while the selector
+ * is in use. Needs basic auth and the X-Admin header. */
+static esp_err_t upload_handler(httpd_req_t *req)
+{
+    if (!guard_post(req))
+    {
+        return ESP_OK;
+    }
+    size_t total = req->content_len;
+    if (total == 0)
+    {
+        return reply(req, "400 Bad Request", false, "Empty file");
+    }
+    if (total > PRESET_MAX_HEX_CHARS)
+    {
+        return reply(req, "413 Payload Too Large", false, "File too large (max 6144 bytes)");
+    }
+    char *body = malloc(PRESET_MAX_HEX_CHARS + 1);
+    if (body == NULL)
+    {
+        return reply(req, "500 Internal Server Error", false, "Not enough memory");
+    }
+    size_t got = 0;
+    while (got < total)
+    {
+        int n = httpd_req_recv(req, body + got, total - got);
+        if (n == HTTPD_SOCK_ERR_TIMEOUT)
+        {
+            continue;
+        }
+        if (n <= 0)
+        {
+            free(body);
+            ESP_LOGW(TAG, "preset upload: receive failed after %u of %u bytes", (unsigned)got, (unsigned)total);
+            return reply(req, "400 Bad Request", false, "Upload interrupted");
+        }
+        got += (size_t)n;
+    }
+    bool is_macro = false;
+    int nbytes = 0;
+    uint32_t crc = 0;
+    preset_upload_result_t r = preset_server_upload(body, total, &is_macro, &nbytes, &crc);
+    free(body);
+    switch (r)
+    {
+    case PRESET_UPLOAD_OK:
+    {
+        char crchex[9];
+        char buf[160];
+        crc_hex(crchex, crc);
+        snprintf(buf, sizeof(buf),
+                 "{\"ok\":true,\"message\":\"Stored %d bytes (%s)\",\"type\":\"%s\",\"bytes\":%d,\"crc32\":\"%s\"}",
+                 nbytes, is_macro ? "macro" : "hex preset", is_macro ? "macro" : "hex", nbytes, crchex);
+        http_log_set_status(req, "200 OK");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
+    }
+    case PRESET_UPLOAD_BUSY:
+        return reply(req, "409 Conflict", false, "Test run or selector in use, try again later");
+    case PRESET_UPLOAD_BAD_MACRO:
+        return reply(req, "400 Bad Request", false, "Not a valid macro file");
+    case PRESET_UPLOAD_BAD_HEX:
+        return reply(req, "400 Bad Request", false, "Not valid hex content (max 2048 bytes)");
+    default:
+        return reply(req, "500 Internal Server Error", false, "Not enough memory");
+    }
+}
 /* ─── Registration ───────────────────────────────────────────────────────── */
 
 void admin_api_register(httpd_handle_t server)
@@ -614,6 +683,7 @@ void admin_api_register(httpd_handle_t server)
         {.uri = "/admin/status", .method = HTTP_GET, .handler = status_handler},
         {.uri = "/admin/history", .method = HTTP_GET, .handler = history_handler},
         {.uri = "/admin/preset", .method = HTTP_GET, .handler = preset_handler},
+        {.uri = "/admin/preset", .method = HTTP_POST, .handler = upload_handler},
         {.uri = "/admin/update/check", .method = HTTP_POST, .handler = check_handler},
         {.uri = "/admin/update/apply", .method = HTTP_POST, .handler = apply_handler},
         {.uri = "/admin/format", .method = HTTP_POST, .handler = format_handler},
