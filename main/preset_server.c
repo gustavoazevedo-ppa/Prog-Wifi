@@ -1151,6 +1151,9 @@ static void run_job(job_t *job)
     job->level = lvls[found_idx];
     int nbytes;
     bool is_macro = false;
+    /* Inline comments ("//" to the end of the line) are removed before detection, so the stored
+     * text, its CRC and the log line only hold the payload. */
+    ctx.len = selector_macro_strip_comments(ctx.buf, ctx.len);
     const uint8_t *mstart = macro_start(ctx.buf, ctx.len);
     if (mstart != NULL)
     {

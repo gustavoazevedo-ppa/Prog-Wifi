@@ -140,6 +140,24 @@ selector_macro_result_t selector_macro_validate(const uint8_t *data, size_t len)
     }
 }
 
+size_t selector_macro_strip_comments(char *buf, size_t len)
+{
+    size_t w = 0;
+    size_t r = 0;
+    while (r < len)
+    {
+        if (buf[r] == '/' && r + 1 < len && buf[r + 1] == '/')
+        {
+            while (r < len && buf[r] != '\r' && buf[r] != '\n')
+            {
+                r++;
+            }
+            continue; // the line break (if any) is copied by the next pass
+        }
+        buf[w++] = buf[r++];
+    }
+    return w;
+}
 size_t selector_macro_normalize_popup(const char rows[2][16], char *out, size_t cap)
 {
     size_t n = 0;
@@ -639,6 +657,44 @@ bool selector_macro_selftest(void)
         // The size limit is checked before any byte is read
         if (selector_macro_validate((const uint8_t *)"#H\n1", SELECTOR_MACRO_MAX + 1) !=
             SELECTOR_MACRO_ERR_TOO_LONG)
+        {
+            return false;
+        }
+    }
+    // Inline comments: "//" to the end of the line is removed, line breaks stay
+    {
+        static const struct
+        {
+            const char *in;
+            const char *out;
+        } cvec[] = {
+            {"#H\n3 C // press\n2 c", "#H\n3 C \n2 c"},
+            {"// note\n#H\n1", "\n#H\n1"},
+            {"#H\r\n3//a\r\n4", "#H\r\n3\r\n4"},
+            {"#H\n3//x\n4", "#H\n3\n4"},
+            {"#H\n3 // last line, no break", "#H\n3 "},
+            {"A1// x\nB2", "A1\nB2"},
+            {"#H\n3 / 4", "#H\n3 / 4"}, // a single '/' is not a comment
+            {"#H\n3 /", "#H\n3 /"},
+            {"", ""},
+        };
+        for (size_t i = 0; i < sizeof(cvec) / sizeof(cvec[0]); i++)
+        {
+            char tmp[48];
+            size_t n = strlen(cvec[i].in);
+            memcpy(tmp, cvec[i].in, n);
+            n = selector_macro_strip_comments(tmp, n);
+            if (n != strlen(cvec[i].out) || memcmp(tmp, cvec[i].out, n) != 0)
+            {
+                return false;
+            }
+        }
+        // A commented macro validates once stripped, a single '/' still does not
+        char ok[] = "#H\n3 C // press\n2 c // release";
+        size_t okn = selector_macro_strip_comments(ok, strlen(ok));
+        char bad[] = "#H\n3 / 4";
+        if (selector_macro_validate((const uint8_t *)ok, okn) != SELECTOR_MACRO_OK ||
+            selector_macro_validate((const uint8_t *)bad, strlen(bad)) != SELECTOR_MACRO_ERR_BAD_CHAR)
         {
             return false;
         }

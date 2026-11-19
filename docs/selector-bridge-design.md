@@ -476,6 +476,7 @@ macro from a preset. It can be edited with any text editor and uploaded again.
 - **Header line:** `#` followed by the central's start screen (the stored pop-up, see below), ended by
   the first CR or LF. It is informational. The Prog does not compare it with the central.
 - **Body:** tokens. Blanks (space, tab, CR, LF) between tokens are optional and ignored, so `3C2c` reads like `3 C 2 c` and `CD` is a chord. A number ends at the first character that is not a digit, so two numbers split by a blank add up: `1 5` is 1 then 5 (6 replies), not 15.
+- **Comments:** `//` and the rest of the line are ignored (also in a hex preset). They are removed right after the download (`selector_macro_strip_comments`), before the file is detected and validated, so the 2048-byte limit and the stored text apply to what is left. A single `/` is still an invalid character.
   - A **number** (decimal, 1 to 65535) means "send this many replies with the current key state".
     Two numbers in a row add up.
   - A **key token** is a letter: `B` = MINUS (Baixo), `C` = PLUS (Cima), `E` = LEFT (`<-`, Esquerda), `D` = RIGHT (`->`, Direita).

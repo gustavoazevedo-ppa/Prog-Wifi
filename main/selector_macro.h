@@ -35,6 +35,11 @@ typedef enum
 // accepted. The length limit is checked before any byte is read.
 selector_macro_result_t selector_macro_validate(const uint8_t *data, size_t len);
 
+// Removes inline comments in place: "//" and everything after it up to (not including) the next
+// CR or LF. Line breaks stay, so tokens never merge and the header line still ends where it did.
+// Applies to downloaded macro and hex preset files, before they are detected and validated.
+// Returns the new length (the buffer is not NUL terminated by this function).
+size_t selector_macro_strip_comments(char *buf, size_t len);
 // Normalizes a start screen (two rows of 16, space padded, not NUL terminated) to the pop-up
 // form: each row trimmed of leading and trailing spaces, empty rows dropped, rows joined with
 // '/', bytes outside printable ASCII replaced by '?'. Writes a NUL terminated string and returns
