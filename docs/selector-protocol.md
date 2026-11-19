@@ -418,6 +418,10 @@ reference details) is tracked in `docs/open-questions.md`, section A.
 | UART1 | Selector (this protocol) | GPIO25 (TX), GPIO26 (RX) |
 | UART2 | DUT | GPIO17 (TX), GPIO16 (RX) |
 
+UART2 is also the link the jig protocol (`jiga-protocol.md`) and the connect protocol use toward the
+central. Selector, jig and connect are dialects of this one link, one at a time (see
+`selector-bridge-design.md` section 3).
+
 - UART1 defaults to GPIO9/10 (flash pins), so it must always be remapped with
   `uart_set_pin(UART_NUM_1, GPIO_NUM_25, GPIO_NUM_26, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)`.
 - GPIO25/26 are clean at boot (no strapping, no boot glitches).

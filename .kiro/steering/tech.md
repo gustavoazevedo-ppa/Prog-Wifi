@@ -38,4 +38,4 @@ Log hook, NVS init, schema check, boot-loop check, boot counters, netif and even
 
 - Status LEDs are active-low: `WIFI_LED_PIN` GPIO33, `ETH_LED_PIN` GPIO32.
 - The OTA process owns the ETH LED while it runs (`ota_button_leds_busy()`).
-- Selector bridge UARTs, 9600 8N1, 3.3 V (see `docs/selector-protocol.md` and `docs/selector-bridge-design.md`): UART1 faces the real selector (TX GPIO25, RX GPIO26), UART2 faces the central / DUT (TX GPIO17, RX GPIO16). The module is an ESP32-WROOM-32D (no PSRAM, GPIO16/17 free).
+- Selector bridge UARTs, 9600 8N1, 3.3 V (see `docs/selector-protocol.md` and `docs/selector-bridge-design.md`): UART1 faces the real selector (TX GPIO25, RX GPIO26), UART2 faces the central / DUT (TX GPIO17, RX GPIO16). UART2 is also the link for the jig and connect protocols (one dialect at a time), so a jig test and the bridge never drive it together. The module is an ESP32-WROOM-32D (no PSRAM, GPIO16/17 free).

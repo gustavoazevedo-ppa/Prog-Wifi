@@ -65,6 +65,14 @@ listed in `preset-api-spec.md` ("Still unknown (Stinger side)").
 
 Nothing open. The answered questions are under Resolved, and a known issue is noted in the design (section 7c, Replay).
 
+## G. Jig protocol (central firmware team, or a capture)
+Base for porting the jig test (`jiga-protocol.md`). Not implemented yet. The jig test runs on the same central UART (UART2) as the selector bridge, so it cannot run at the same time as the bridge.
+| ID | Question | Blocks | How |
+|---|---|---|---|
+| J1 | What is the timeout, per product, after which the central reverts to master mode when the jig stops requesting, and what restarts it (any valid request or only some)? For the connect protocol the timeout is 500 to 1500 ms (M3). | The longest gap the test link may have; the priority and period of the link task. | Central firmware team, or stop the requests and measure with the Saleae. |
+| J2 | If the timeout happens while a motor command is active, does the motor stop or keep the last command? | Whether a stalled Prog is a hazard; the stop-on-every-exit rule. | Central firmware team. |
+| J3 | Does the central accept jig requests at any time while it is in master mode, or only in a window after power-up? | Whether the Prog needs to control the central's power or reset on the line. | Central firmware team, or a capture of a jig run. |
+| J5 | The jig protocol shares the central UART (UART2) with the selector dialect. How does the Prog hand the link over cleanly: what the central sends while it switches from master to slave mode, and what the real selector (UART1) sees meanwhile? | Design of the jig task and its coexistence with the bridge (see `selector-bridge-design.md` section 3). | Bench capture of a jig run with the Saleae, central firmware team. |
 ---
 
 ## Resolved
@@ -85,6 +93,7 @@ Nothing open. The answered questions are under Resolved, and a known issue is no
 | C3: central with no selector present | The central keeps sending its initial screen (model and firmware version, a `'S'` frame) until a reply from the selector arrives. It then waits a short delay and shows the first page of its menu. It does not fall back to polls |
 | S1: OK / SEL key mapping | Data1 bit 7 = `OK`, bit 4 = `SEL`, as in the header struct (the Word document had them swapped). Some selectors label them `<-` (OK) and `->` (SEL). The firmware now calls them `LEFT` (bit 7) and `RIGHT` (bit 4). The menu navigates with them |
 | Ethernet MAC on the menu | Same derivation as the Ethernet manager (`ethernet_get_mac()`) |
+| J4: which Prog UART reaches the product's jig port? | UART2 (GPIO17 / 16), the same central UART the selector bridge uses (project owner). The selector, jig and connect dialects share this one link, one at a time, and the central chooses the mode (master = selector dialect, slave = jig or connect). No extra hardware is needed. A jig run has to take the panel port from the bridge, see J5 |
 | UART map | UART1 selector (GPIO25 / 26), UART2 central (GPIO17 / 16), hardware wired |
 | Stop byte | Accept `0x81` and `0x51`. Toward the real selector send `0x81` (it accepts both, confirmed). Toward the central, echo the tail of the frame being answered, per frame (implemented in the panel port); master mode will use the tail of the central's own frames |
 | What puts the central in slave mode | The Infos request (`'I'`, ID 2), sent in place of a reply |
@@ -107,3 +116,5 @@ Nothing open. The answered questions are under Resolved, and a known issue is no
 | Version marker in the macro format | Decided: none. A change in what the syntax means (as the F3 poll count did) is handled by recording the macros again. Unknown tokens are still rejected, so new token types stay safe for old firmware |
 | C2: does the central tolerate replies built from cached keys instead of live key state? | Yes: the central menus were operated through the bridge on the bench |
 | F9: `POST /iniciar` refused with 409 while the Prog is in transparent mode, for every run | Decided by the project owner and bench-tested: every run is refused with 409 while the menu is transparent or replaying a macro from the menu |
+| Timeout reverts the central to master mode | Confirmed (project owner): a timeout on the jig protocol or on the connect protocol returns the central to master mode (selector dialect). There is no return command. The Prog has to keep talking during a session. The timeout values are still open (M3, J1) |
+| J3 (part): is the jig banner the start screen? | Yes (project owner): the banner the jig listens for is the central's start screen (the "pop-up" in the Prog code), a selector `'S'` frame repeated until the selector replies. On a valid selector reply the central moves to its first menu entry |

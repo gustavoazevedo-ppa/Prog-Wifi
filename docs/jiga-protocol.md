@@ -20,7 +20,8 @@ Escopo: só o que o código ativo executa e que é alcançável a partir do `mai
 |---|---|---|
 | Velocidade / formato | 9600 8N1 | dado fornecido pelo usuário (confirmado em bancada); não aparece em arquivo de código lido |
 | Nível | TTL direto do pino do microcontrolador, full-duplex, sem pino de direção | dado do usuário |
-| Relação | A jiga é o mestre. O produto só responde a pedido (exceto o banner de identificação, seção 2) | [código] `SCI_TX` e `RX_SCI`; [comentário] banner |
+| Enlace físico no prog_wifi | A jiga original usa a UART do produto (a "central") diretamente. No prog_wifi essa é a **mesma UART da central que o bridge do seletor intercepta e espelha** (UART2, GPIO17 TX / GPIO16 RX). Seletor, jiga e connect são três dialetos do mesmo enlace, usados um de cada vez. Dado do responsável do projeto | [dado do usuário] |
+| Relação | A central está em modo escravo: a jiga é o mestre e o produto só responde a pedido (exceto o banner de identificação, que a central envia em modo mestre, seção 2) | [código] `SCI_TX` e `RX_SCI`; [comentário] banner |
 | Ordem de bytes de campos de 16 bits | Big-endian no encoder Triflex (byte [5] = alto, [6] = baixo) | [código] + [inferido] (ver seção 4.3) |
 
 ### 1.1 Checksum (todos os frames que têm checksum)
@@ -44,11 +45,20 @@ Escopo: só o que o código ativo executa e que é alcançável a partir do `mai
 
 O byte `[1]` de todo frame é o **comprimento total** do frame em bytes (inclui header, o próprio byte de tamanho, checksum e stop). [código] pedido: `BufferSCI_tx1[1]=8` e `UART_Transmit(..., BufferSCI_tx1[1])` envia exatamente 8 bytes; resposta: 0x11 = 17 e 0x13 = 19 bytes.
 
+### 1.3 Silêncio da jiga e retorno ao modo seletor
+- Termos: a central está em **modo mestre** no protocolo do seletor, o único em que ela é o mestre. Nos protocolos da jiga e connect ela está em **modo escravo**: responde aos pedidos de quem manda (a jiga ou o Prog).
+- Se a jiga para de pedir, a central sai do modo escravo e volta ao modo mestre (protocolo do seletor) por timeout. Não existe comando de retorno. O mesmo vale para o protocolo connect (`docs/connect-protocol.md`, seção 1): um timeout em qualquer dos dois protocolos reverte a central para o modo mestre. Dado do responsável do projeto.
+- O código da jiga não mostra nem testa isso: ela só fica muda durante a escuta do banner e nos estados de fim ou erro, e nunca para de pedir no meio de um teste. O diálogo em lockstep (seção 5, um pedido por resposta válida, retransmissão se a resposta não vier) é o que mantém o produto no protocolo da jiga. [código] + dado do responsável
+- O valor do timeout para este protocolo não é conhecido. Para o connect é entre 500 e 1500 ms, conforme o produto.
+- Consequências do enlace compartilhado: como a jiga usa a UART2, a mesma do bridge do seletor, o teste da jiga e o bridge não podem usar o enlace ao mesmo tempo. Durante o teste o Prog é o mestre na UART2 e o bridge fica suspenso (sem tradutor, sem encaminhar frames do seletor para a central). O seletor real (UART1) não recebe nada da central nesse período. Ao terminar, o Prog devolve a UART2 ao bridge e a central volta ao modo mestre, quando o bridge retoma o diálogo do seletor.
+- Consequências para o port no prog_wifi: o teste não pode ter lacuna entre pedidos (nem durante as esperas do teste, nem por carga de outras tarefas). Depois do fim do teste, aprovado ou não, o Prog fica mudo e espera o primeiro frame válido do seletor vindo da central, como no passo final de salvar preset do connect (`connect-protocol.md` seção 4.1).
+- O banner da seção 2 é a tela inicial da central, um frame `'S'` do seletor, que ela repete até o seletor responder (`connect-protocol.md` seção 1). Quando recebe uma resposta válida do seletor, a central passa para a primeira entrada do menu. É o "pop-up" do código do Prog (`selector-bridge-design.md`, seção "Start-screen pop-up and the reset procedure"). Dado do responsável do projeto.
 ---
 
 ## 2. Banner de identificação (frame de texto)
 
 Cada produto transmite o próprio nome em ASCII no power-up. A jiga o usa para decidir a família sem precisar perguntar. [comentário] `TESTERot.c` case 200 ("Todo produto transmite o nome dele no próprio power-up"). Se o produto vai ou não repetir o banner depois não está no código (ver seção 7).
+**O banner é a tela inicial da central** (o "pop-up" no código do Prog): o frame `'S'` do seletor com o nome e a versão. A central o repete até receber uma resposta válida do seletor e então passa para a primeira entrada do menu. Dado do responsável do projeto. Ver seção 1.3.
 
 Formato inferido a partir do extrator `VerificaModelo_ExtraiNome`: [código]
 
@@ -435,8 +445,8 @@ Marcadas como **L** (lacuna) ou **C** (contradição).
 ### Enlace e framing
 
 1. **L**: velocidade, paridade e stop da UART não estão em nenhum arquivo lido. O 9600 8N1 vem só do dado do usuário. Os parâmetros ficam nos arquivos do DAVE, fora do escopo.
-2. **L**: se o produto envia o banner **apenas no power-up** ou também periodicamente ou sob pedido. O código só assume o power-up.
-3. **L**: formato exato do banner: significado do byte `[2]` (tipo/ID), comprimento real por produto e posição exata do nome. O extrator tolera `[2]` imprimível.
+2. **L**: se o produto envia o banner **apenas no power-up** ou também periodicamente ou sob pedido. O código só assume o power-up. Parcialmente respondida: o banner é a tela inicial da central e ela a repete até o seletor responder, inclusive depois de um timeout da jiga (seção 1.3). Falta saber se a central aceita pedidos da jiga a qualquer momento ou só depois do power-up (`open-questions.md`, J3).
+3. **L**: formato exato do banner: significado do byte `[2]` (tipo/ID), comprimento real por produto e posição exata do nome. O extrator tolera `[2]` imprimível. O banner é um frame `'S'` do seletor (tela inicial da central), então o formato é o de `selector-protocol.md`; falta conferir isso contra uma captura.
 4. **L**: se um banner de tamanho 0x11 ou 0x13 com `[2]` igual a `'C'`, `'L'` ou 0 acionaria o `RX_SCI` como se fosse resposta (o RX Triflex roda em paralelo à captura bruta durante a escuta).
 5. **L**: bytes que a jiga não interpreta e o produto envia: Triflex `[3]`, `[10]` (`AD_Tst_Cp`), `[11..14]` (`TxJiga`), e no frame de 19 bytes `[15]` e `[16]`. Pop `[3]`, `[6]`, `[7]`, `[8]`, `[10]`, `[11]`, `[12]`.
 6. **L**: o frame Pop declara 13 bytes, mas o autômato fecha no 12º. O que o 13º byte (e o 12º) significam não é conferido. Pela analogia com o Triflex seriam checksum e stop.
@@ -455,6 +465,8 @@ Marcadas como **L** (lacuna) ou **C** (contradição).
 16. **L**: o nome do Facility Axis não casa com a entrada `"Triflex Facility      V2.1"` (6 espaços); o reconhecimento depende só da palavra `"Facility"`.
 17. **L**: nomes exatos transmitidos por cada produto (espaçamento incluído) só aparecem em `ModeloTabela` e nos comentários. As strings de tabela com espaços de enchimento (`"AGILITY LEGERO  V2.3"`, `"AGILITY  AXIS   V1.0"`) dependem de o produto enviar exatamente esses espaços.
 18. **L**: `CMD2` não é reiniciado entre testes. Híbrida e SP herdam o `CMD2` do teste anterior (Legero deixa 1).
+19. **L**: valor do timeout que faz a central voltar ao modo mestre quando a jiga para de pedir (seção 1.3), por produto, e o que o reinicia (qualquer pedido válido ou só alguns). Ver `open-questions.md`, J1.
+20. **L**: o que o motor faz quando o timeout ocorre com um comando de giro ativo: para ou mantém o último comando. Ver `open-questions.md`, J2.
 
 ### Observação sobre o que foi lido
 

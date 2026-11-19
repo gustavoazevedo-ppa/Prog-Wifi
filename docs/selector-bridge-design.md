@@ -30,7 +30,8 @@ Non-goals (for now)
 - Menu injection beyond the Prog menu, parameter presets, value extraction, per-product profiles.
   They are translators built later on top of this core. Macros (record and replay of key
   presses) are designed in section 7c.
-- Jig / BLE function codes. They are not known selector commands and are dropped in the
+- Jig / BLE function codes. The jig protocol itself shares the central UART (UART2) with the bridge
+  and is a separate future port, not part of the bridge. As selector-role frames, jig / BLE codes are not known selector commands and are dropped in the
   selector role. (The master-mode "connect" protocol is a separate dialect, see section 6.3.)
 - Any change to HTTP / admin APIs.
 - Implementing the master-mode command set (read / save config). The design reserves room for
@@ -78,6 +79,12 @@ Non-goals (for now)
 | UART1 | Real selector (Prog is host) | GPIO25 TX, GPIO26 RX |
 | UART2 | Central / DUT (Prog is selector) | GPIO17 TX, GPIO16 RX |
 
+- UART2 is the one link to the central for every dialect: the selector dialect (the bridge), the
+  jig protocol (`jiga-protocol.md`) and the connect protocol (`connect-protocol.md`). The central
+  picks the dialect by mode (master = selector, slave = jig / connect). A jig or connect session
+  therefore takes the panel port away from the bridge for its whole duration, and the bridge
+  resumes when the central falls back to master mode. This handover is not designed yet (see
+  `open-questions.md` J5); the jig test and the bridge must never drive UART2 at the same time.
 - UART1 defaults to the flash pins, so it is always remapped with `uart_set_pin()`.
 - 10k pull-up to 3.3V on both RX lines (GPIO26, GPIO16). Shared ground. 3.3V on both sides.
 - GPIO16/17 are PSRAM pins on WROVER modules. The module is an ESP32-WROOM-32D (no PSRAM), so

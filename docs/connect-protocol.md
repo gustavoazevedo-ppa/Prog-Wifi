@@ -36,10 +36,13 @@ Implementation status: not implemented. See `docs/selector-bridge-design.md` for
   request sent while it is still processing the previous answer, so the Prog always waits for
   the reply (or a timeout) before the next request. There is no minimum gap between commands.
   The 250 ms and 500 ms delays in the old code are arbitrary. **[owner]**
-- The central returns to master by a timeout only. There is no return command. The timeout varies
-  by product, mostly between 500 and 1500 ms. **[owner]** The first sign that it is back is its
-  initial screen (product name and firmware version, an ordinary selector `'S'` frame), which it
-  sends repeatedly until the selector replies. **[owner]** The text has no stable pattern across
+- The central returns to master by a timeout only. There is no return command. The same holds for
+  the jig protocol (`docs/jiga-protocol.md` section 1.3): a timeout on either protocol reverts the
+  central to master mode. **[owner]** So the Prog must keep talking for as long as the session
+  lasts. The timeout varies by product, mostly between 500 and 1500 ms. **[owner]** The first sign that it is back is its
+  initial screen (product name and firmware version, an ordinary selector `'S'` frame, the "pop-up"
+  in the Prog code and the "banner" the jig listens for), which it sends repeatedly until the
+  selector replies. On a valid selector reply it moves to the first menu entry. **[owner]** The text has no stable pattern across
   models and firmware, so it is not parsed: the first valid selector-dialect frame is the signal.
 - **[unverified]** What resets the central's slave-mode timeout.
 - **[unverified]** Whether `'I'` is needed in every session before `'V'` or `'R'`, or only to

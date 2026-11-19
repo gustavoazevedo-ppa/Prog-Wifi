@@ -18,7 +18,7 @@ Escopo: só o que o código ativo executa e que é alcançável a partir do `mai
 - No laço do `main`, a ordem por volta é `TESTERot()`, `VerificaModelo()`, `ModoManutencao()`, `SCI_TX()`. [código]
 - **"(espera)"** na coluna de entrada significa que o estado só age depois que `TempoMaquina` zera. Os valores dessas esperas foram omitidos por escopo. Eles definem, por exemplo, quanto tempo o motor fica ligado em cada passo. Estão listados como lacuna (§11, item 1). [código]
 - `CMD1`, `CMD2`, `CMD3` são os bytes de comando do pedido Pop (protocolo §3.2). `CMD_*` são bits de `CmdJiga` do pedido Triflex (protocolo §3.1.1). O significado dos valores de `CMD1` é **[inferido]** (protocolo §3.2.1).
-- A jiga repete o pedido continuamente (lockstep). Um estado que "liga" um comando apenas altera `CmdJiga` ou `CMD1/2`; o valor vai no próximo pedido. [código] protocolo §5.
+- A jiga repete o pedido continuamente (lockstep), e isso também mantém a central em modo escravo: se os pedidos pararem, ela volta ao modo mestre (protocolo do seletor) por timeout (`jiga-protocol.md` seção 1.3; valor desconhecido, `open-questions.md` J1). Um estado que "liga" um comando apenas altera `CmdJiga` ou `CMD1/2`; o valor vai no próximo pedido. [código] protocolo §5.
 - **Texto ao operador**: vem da tabela `Frases_LCD[]` de `Flash.c`, indexada pelo número entre colchetes. Textos de 16 caracteres por linha (linha 1 + linha 2). Textos que não vêm da tabela estão marcados "literal no código".
 - O estado final de qualquer teste é `CtrlManutencao = 0` e `CtrlFunMotor = 0`. Nenhum dos dois tem `case 0` ativo, então a jiga fica ociosa. [código]
 
